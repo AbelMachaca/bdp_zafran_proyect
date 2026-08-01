@@ -7,7 +7,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "node --import tsx --test src/**/*.test.ts",
-    "db:test": "tsx src/db-test.ts"
+    "db:test": "tsx src/db-test.ts",
+    "db:test:prod": "node dist/db-test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

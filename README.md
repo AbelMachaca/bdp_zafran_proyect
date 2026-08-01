@@ -31,3 +31,59 @@ La aplicación no contiene rutas de escritura. El explorador usa una lista cerra
 - Los estados se pueden activar o desactivar; cuando se usa una selección personalizada, el panel reconstruye los importes desde los pedidos.
 - “Mes anterior” conserva los mismos días del mes seleccionado; “Año anterior” conserva las mismas fechas del año previo. También se admite un rango comparativo personalizado.
 - La atribución se obtiene de los campos nativos `_wc_order_attribution_*` guardados en cada pedido.
+
+## Docker y Easypanel
+
+El repositorio contiene dos imágenes independientes para crear dos aplicaciones dentro del mismo proyecto de Easypanel:
+
+- `Dockerfile.backend`: API Node.js/Express, puerto interno `3001`.
+- `Dockerfile.frontend`: React compilado y servido por Nginx, puerto interno `80`.
+
+### Aplicación backend
+
+Configuración de compilación:
+
+- Método: `Dockerfile`.
+- Contexto: raíz del repositorio (`.`).
+- Ruta: `Dockerfile.backend`.
+- Puerto interno: `3001`.
+- Healthcheck HTTP: `/api/health`.
+
+Variables del backend:
+
+```env
+WC_STORE_URL=https://zafran.com.ar
+WC_CONSUMER_KEY=ck_reemplazar
+WC_CONSUMER_SECRET=cs_reemplazar
+DATABASE_URL=postgresql://usuario:password@host-interno-postgres:5432/base
+DB_SSL=false
+PORT=3001
+CLIENT_ORIGIN=https://dominio-publico-del-frontend
+```
+
+No copies `server/.env` al contenedor. Cargá los valores reales desde las variables de entorno de Easypanel. Para PostgreSQL usá la URL interna del servicio cuando ambos estén en el mismo proyecto.
+
+### Aplicación frontend
+
+Configuración de compilación:
+
+- Método: `Dockerfile`.
+- Contexto: raíz del repositorio (`.`).
+- Ruta: `Dockerfile.frontend`.
+- Puerto interno: `80`.
+
+Variable del frontend:
+
+```env
+BACKEND_URL=http://nombre-interno-del-backend:3001
+```
+
+`BACKEND_URL` se usa al iniciar Nginx y no queda incluido en el JavaScript del navegador. Elegí el hostname o URL interna que Easypanel muestre para la aplicación backend. Como alternativa puede usarse su URL pública HTTPS.
+
+El navegador solicita `/api` al mismo dominio del frontend y Nginx reenvía esas solicitudes al backend. Por eso la interfaz conserva las rutas actuales y no necesita conocer las credenciales.
+
+Una vez desplegado, podés validar PostgreSQL desde la consola del servicio:
+
+```sh
+npm run db:test:prod -w server
+```

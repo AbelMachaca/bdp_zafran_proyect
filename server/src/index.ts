@@ -265,6 +265,6 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 app.listen(config.port, () => {
-  console.log(`API local de solo lectura: http://localhost:${config.port}`);
+  console.log(`Servidor Zafrán listo en el puerto ${config.port}.`);
   console.log(credentialsConfigured() ? 'Credenciales configuradas.' : 'Esperando credenciales en server/.env');
 });
