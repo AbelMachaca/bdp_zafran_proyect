@@ -72,15 +72,7 @@ Configuración de compilación:
 - Ruta: `Dockerfile.frontend`.
 - Puerto interno: `80`.
 
-Variable del frontend:
-
-```env
-BACKEND_URL=http://nombre-interno-del-backend:3001
-```
-
-`BACKEND_URL` se usa al iniciar Nginx y no queda incluido en el JavaScript del navegador. Elegí el hostname o URL interna que Easypanel muestre para la aplicación backend. Como alternativa puede usarse su URL pública HTTPS.
-
-El navegador solicita `/api` al mismo dominio del frontend y Nginx reenvía esas solicitudes al backend. Por eso la interfaz conserva las rutas actuales y no necesita conocer las credenciales.
+El frontend no necesita una variable con la URL del backend. React solicita `/api` al mismo dominio del frontend y Nginx reenvía internamente esas solicitudes a `http://backend_zafran:3001`. El hostname interno no queda incluido en el JavaScript enviado al navegador.
 
 Una vez desplegado, podés validar PostgreSQL desde la consola del servicio:
 
