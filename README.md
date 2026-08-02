@@ -59,6 +59,9 @@ DATABASE_URL=postgresql://usuario:password@host-interno-postgres:5432/base
 DB_SSL=false
 PORT=3001
 CLIENT_ORIGIN=https://dominio-publico-del-frontend
+WC_WEBHOOK_SECRET=generar_un_secreto_aleatorio
+AUTOMATIONS_ACTIVE_FROM=2026-08-01T18:00:00-03:00
+EMBLUE_ENABLED=false
 ```
 
 No copies `server/.env` al contenedor. Cargá los valores reales desde las variables de entorno de Easypanel. Para PostgreSQL usá la URL interna del servicio cuando ambos estén en el mismo proyecto.
@@ -72,10 +75,37 @@ Configuración de compilación:
 - Ruta: `Dockerfile.frontend`.
 - Puerto interno: `80`.
 
-El frontend no necesita una variable con la URL del backend. React solicita `/api` al mismo dominio del frontend y Nginx reenvía internamente esas solicitudes a `http://backend_zafran:3001`. El hostname interno no queda incluido en el JavaScript enviado al navegador.
+El frontend no necesita una variable con la URL del backend. React solicita `/api` al mismo dominio del frontend y Nginx reenvía internamente esas solicitudes a `http://bdp-cuentas_backend_zafran:3001`. El hostname interno no queda incluido en el JavaScript enviado al navegador.
 
 Una vez desplegado, podés validar PostgreSQL desde la consola del servicio:
 
 ```sh
 npm run db:test:prod -w server
+```
+
+## Automatizaciones WooCommerce
+
+Al iniciar con PostgreSQL configurado, el backend aplica migraciones versionadas de forma automática. Las migraciones crean contactos, pedidos, artículos, eventos de WooCommerce, trabajos programados e historial de intentos.
+
+El receptor público es:
+
+```text
+POST https://bdp-cuentas-backend-zafran.i8mj7w.easypanel.host/webhooks/woocommerce/orders
+```
+
+En WooCommerce deben crearse dos webhooks con esa misma URL y el mismo secreto:
+
+- `Pedido creado` (`order.created`).
+- `Pedido actualizado` (`order.updated`).
+
+No actives los webhooks antes de desplegar el receptor. WooCommerce y Easypanel deben compartir exactamente el valor de `WC_WEBHOOK_SECRET`.
+
+`AUTOMATIONS_ACTIVE_FROM` define el inicio de la automatización y evita generar trabajos retroactivos. Usá una fecha ISO 8601 con zona horaria argentina. Mientras `EMBLUE_ENABLED=false`, los trabajos vencidos pasan a `ready` y no se envía información a emBlue.
+
+Comprobaciones disponibles:
+
+```text
+GET /api/health
+GET /api/automations/status
+GET /api/automations/jobs?limit=50
 ```

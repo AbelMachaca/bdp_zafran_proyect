@@ -6,6 +6,10 @@ import { config, credentialsConfigured } from './config.js';
 import { WooError, getAll, publicApiIndex, wooGet } from './woocommerce.js';
 import { capabilities, explorerResources } from './capabilities.js';
 import { orderDimensions, summarizeOrders, type AnalyticsOrder } from './analytics.js';
+import { databaseConfigured } from './database.js';
+import { runMigrations } from './migrations.js';
+import { automationJobsHandler, automationStatusHandler, startAutomationWorker } from './automations.js';
+import { wooOrderWebhookHandler } from './webhooks.js';
 
 const app = express();
 const dashboardCache = new Map<string, { expires: number; value: unknown }>();
@@ -13,6 +17,7 @@ const orderRangeCache = new Map<string, { expires: number; value: Record<string,
 const salesReportCache = new Map<string, { expires: number; value: NativeSalesReport }>();
 app.use(helmet());
 app.use(cors({ origin: config.clientOrigin }));
+app.post('/webhooks/woocommerce/orders', express.raw({ type: 'application/json', limit: '2mb' }), wooOrderWebhookHandler);
 app.use(express.json({ limit: '100kb' }));
 
 const listQuery = z.object({
@@ -26,8 +31,15 @@ const listQuery = z.object({
 });
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, configured: credentialsConfigured(), storeUrl: config.storeUrl, mode: 'read-only' });
+  res.json({
+    ok: true, configured: credentialsConfigured(), databaseConfigured: databaseConfigured(),
+    automationsConfigured: Boolean(config.wooWebhookSecret && config.automationsActiveFrom),
+    storeUrl: config.storeUrl, mode: 'read-only',
+  });
 });
+
+app.get('/api/automations/status', automationStatusHandler);
+app.get('/api/automations/jobs', automationJobsHandler);
 
 app.get('/api/capabilities', async (_req, res, next) => {
   try {
@@ -264,7 +276,20 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   return res.status(500).json({ error: error instanceof Error ? error.message : 'Error interno' });
 });
 
-app.listen(config.port, () => {
-  console.log(`Servidor Zafrán listo en el puerto ${config.port}.`);
-  console.log(credentialsConfigured() ? 'Credenciales configuradas.' : 'Esperando credenciales en server/.env');
+async function start() {
+  if (databaseConfigured()) {
+    await runMigrations();
+    startAutomationWorker();
+  } else {
+    console.warn('PostgreSQL no está configurado: automatizaciones deshabilitadas.');
+  }
+  app.listen(config.port, () => {
+    console.log(`Servidor Zafrán listo en el puerto ${config.port}.`);
+    console.log(credentialsConfigured() ? 'Credenciales configuradas.' : 'Esperando credenciales en server/.env');
+  });
+}
+
+void start().catch((error) => {
+  console.error('No se pudo iniciar el backend.', error);
+  process.exitCode = 1;
 });

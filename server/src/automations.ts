@@ -1,0 +1,291 @@
+import type { Request, Response, NextFunction } from 'express';
+import type { PoolClient } from 'pg';
+import { pool } from './database.js';
+import { config } from './config.js';
+import { wooGet } from './woocommerce.js';
+
+type WooMeta = { key?: string; value?: unknown };
+type WooLineItem = {
+  id?: number; product_id?: number; variation_id?: number; name?: string; sku?: string;
+  quantity?: number; subtotal?: string; total?: string; meta_data?: WooMeta[];
+  _categories?: Array<{ id: number; name: string }>;
+};
+export type WooAutomationOrder = {
+  id?: number; number?: string; status?: string; currency?: string; total?: string;
+  customer_id?: number; date_created?: string; date_created_gmt?: string; date_modified?: string; date_modified_gmt?: string;
+  date_paid?: string | null; date_paid_gmt?: string | null;
+  billing?: { email?: string; first_name?: string; last_name?: string; phone?: string };
+  line_items?: WooLineItem[]; meta_data?: WooMeta[];
+  [key: string]: unknown;
+};
+
+const invalidStatuses = new Set(['cancelled', 'failed', 'refunded', 'trash']);
+const productCategoryCache = new Map<number, { expires: number; categories: Array<{ id: number; name: string }> }>();
+
+export async function enrichOrderCategories(order: WooAutomationOrder) {
+  const productIds = [...new Set((order.line_items || []).map((item) => Number(item.product_id || 0)).filter(Boolean))].slice(0, 30);
+  const categoriesByProduct = new Map<number, Array<{ id: number; name: string }>>();
+  await Promise.all(productIds.map(async (productId) => {
+    const cached = productCategoryCache.get(productId);
+    if (cached && cached.expires > Date.now()) return categoriesByProduct.set(productId, cached.categories);
+    try {
+      const product = await wooGet<{ categories?: Array<{ id?: number; name?: string }> }>(`products/${productId}`);
+      const categories = (product.data.categories || [])
+        .filter((category) => Number.isInteger(category.id) && category.name)
+        .map((category) => ({ id: Number(category.id), name: String(category.name) }));
+      productCategoryCache.set(productId, { expires: Date.now() + 6 * 60 * 60_000, categories });
+      categoriesByProduct.set(productId, categories);
+    } catch {
+      categoriesByProduct.set(productId, []);
+    }
+  }));
+  for (const item of order.line_items || []) item._categories = categoriesByProduct.get(Number(item.product_id || 0)) || [];
+}
+
+export function marketingConsent(metaItems: WooMeta[] = []) {
+  const meta = new Map(metaItems.map((item) => [String(item.key || ''), item.value]));
+  const canonical = normalizedBoolean(meta.get('_bdp_newsletter_opt_in'));
+  if (canonical !== null) return { allowed: canonical, source: '_bdp_newsletter_opt_in' };
+  for (const key of ['billing_opt-in', '_billing_opt-in', '_billing_opt-infmebilling']) {
+    const value = normalizedBoolean(meta.get(key));
+    if (value !== null) return { allowed: value, source: key };
+  }
+  return { allowed: false, source: null };
+}
+
+export async function persistWooOrder(client: PoolClient, order: WooAutomationOrder) {
+  if (!Number.isInteger(order.id) || Number(order.id) <= 0) throw new Error('El webhook no contiene un ID de pedido válido');
+  const orderId = Number(order.id);
+  const status = String(order.status || 'unknown');
+  const email = String(order.billing?.email || '').trim().toLowerCase();
+  const consent = marketingConsent(order.meta_data);
+  const existing = await client.query<{ status: string; processing_at: Date | null; contact_id: string | null }>(
+    'SELECT status, processing_at, contact_id FROM automation_orders WHERE woo_order_id = $1 FOR UPDATE', [orderId],
+  );
+  const previous = existing.rows[0];
+  const enteredProcessing = status === 'processing' && previous?.status !== 'processing';
+  const estimatedCompleted = status === 'completed' && !previous?.processing_at
+    ? wooDate(order.date_paid, order.date_paid_gmt) || wooDate(order.date_modified, order.date_modified_gmt)
+    : null;
+  const processingAt = enteredProcessing ? new Date() : previous?.processing_at || estimatedCompleted;
+
+  let contactId: string | null = previous?.contact_id || null;
+  if (email) {
+    const contact = await client.query<{ id: string }>(`
+      INSERT INTO automation_contacts
+        (email, woo_customer_id, first_name, last_name, phone, marketing_opt_in, marketing_opt_in_source, raw)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+      ON CONFLICT (email) DO UPDATE SET
+        woo_customer_id = COALESCE(EXCLUDED.woo_customer_id, automation_contacts.woo_customer_id),
+        first_name = EXCLUDED.first_name,
+        last_name = EXCLUDED.last_name,
+        phone = EXCLUDED.phone,
+        marketing_opt_in = EXCLUDED.marketing_opt_in,
+        marketing_opt_in_source = EXCLUDED.marketing_opt_in_source,
+        raw = EXCLUDED.raw,
+        updated_at = NOW()
+      RETURNING id
+    `, [
+      email, order.customer_id || null, order.billing?.first_name || '', order.billing?.last_name || '',
+      order.billing?.phone || '', consent.allowed, consent.source, JSON.stringify(order.billing || {}),
+    ]);
+    contactId = contact.rows[0]?.id || null;
+  }
+
+  await client.query(`
+    INSERT INTO automation_orders
+      (woo_order_id, order_number, contact_id, status, currency, total, date_created, date_modified, date_paid,
+       processing_at, marketing_opt_in, marketing_opt_in_source, raw)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+    ON CONFLICT (woo_order_id) DO UPDATE SET
+      order_number = EXCLUDED.order_number,
+      contact_id = COALESCE(EXCLUDED.contact_id, automation_orders.contact_id),
+      status = EXCLUDED.status,
+      currency = EXCLUDED.currency,
+      total = EXCLUDED.total,
+      date_created = EXCLUDED.date_created,
+      date_modified = EXCLUDED.date_modified,
+      date_paid = EXCLUDED.date_paid,
+      processing_at = COALESCE(EXCLUDED.processing_at, automation_orders.processing_at),
+      marketing_opt_in = EXCLUDED.marketing_opt_in,
+      marketing_opt_in_source = EXCLUDED.marketing_opt_in_source,
+      raw = EXCLUDED.raw,
+      updated_at = NOW()
+  `, [
+    orderId, order.number || String(orderId), contactId, status, order.currency || null, numeric(order.total),
+    wooDate(order.date_created, order.date_created_gmt), wooDate(order.date_modified, order.date_modified_gmt),
+    wooDate(order.date_paid, order.date_paid_gmt), processingAt,
+    consent.allowed, consent.source, JSON.stringify(order),
+  ]);
+
+  await client.query('DELETE FROM automation_order_items WHERE woo_order_id = $1', [orderId]);
+  for (const item of order.line_items || []) {
+    if (!Number.isInteger(item.id)) continue;
+    await client.query(`
+      INSERT INTO automation_order_items
+        (woo_order_id, woo_line_item_id, product_id, variation_id, name, sku, quantity, subtotal, total,
+         category_ids, category_names, raw)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
+    `, [
+      orderId, item.id, item.product_id || null, item.variation_id || null, item.name || '', item.sku || '',
+      numeric(item.quantity) ?? 0, numeric(item.subtotal), numeric(item.total),
+      (item._categories || []).map((category) => category.id), (item._categories || []).map((category) => category.name),
+      JSON.stringify(item),
+    ]);
+  }
+
+  if (invalidStatuses.has(status)) {
+    await cancelOrderJobs(client, orderId, `Pedido en estado ${status}`);
+    if (contactId) await restorePreviousCrossSell(client, contactId, orderId);
+    return { orderId, status, action: 'cancelled' as const };
+  }
+
+  const activeFrom = config.automationsActiveFrom;
+  if (!contactId || !processingAt || !activeFrom || processingAt < activeFrom) {
+    return { orderId, status, action: 'stored' as const };
+  }
+
+  if (status === 'processing' || status === 'completed') {
+    await ensurePostPurchase(client, contactId, orderId, processingAt, order);
+  }
+  if (enteredProcessing) {
+    await resetCrossSell(client, contactId, orderId, processingAt, order, consent.allowed);
+  }
+  return { orderId, status, action: 'scheduled' as const };
+}
+
+async function ensurePostPurchase(client: PoolClient, contactId: string, orderId: number, processingAt: Date, order: WooAutomationOrder) {
+  await client.query(`
+    INSERT INTO automation_jobs
+      (automation_type, contact_id, trigger_order_id, dedupe_key, due_at, payload)
+    VALUES ('post_purchase', $1, $2, $3, $4, $5::jsonb)
+    ON CONFLICT (dedupe_key) DO NOTHING
+  `, [contactId, orderId, `post_purchase:${orderId}`, addDays(processingAt, 10), JSON.stringify(jobPayload(order))]);
+}
+
+async function resetCrossSell(
+  client: PoolClient, contactId: string, orderId: number, processingAt: Date, order: WooAutomationOrder, allowed: boolean,
+) {
+  await client.query(`
+    UPDATE automation_jobs SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(),
+      last_error = 'Reprogramado por una compra posterior'
+    WHERE contact_id = $1 AND automation_type = 'cross_sell'
+      AND status IN ('scheduled', 'ready') AND trigger_order_id <> $2
+  `, [contactId, orderId]);
+  if (!allowed) return;
+  await scheduleCrossSell(client, contactId, orderId, processingAt, order);
+}
+
+async function scheduleCrossSell(client: PoolClient, contactId: string, orderId: number, processingAt: Date, order: WooAutomationOrder) {
+  await client.query(`
+    INSERT INTO automation_jobs
+      (automation_type, contact_id, trigger_order_id, dedupe_key, due_at, payload)
+    VALUES ('cross_sell', $1, $2, $3, $4, $5::jsonb)
+    ON CONFLICT (dedupe_key) DO UPDATE SET
+      due_at = EXCLUDED.due_at,
+      status = 'scheduled',
+      payload = EXCLUDED.payload,
+      cancelled_at = NULL,
+      last_error = NULL,
+      updated_at = NOW()
+    WHERE automation_jobs.status IN ('cancelled', 'skipped', 'failed')
+  `, [contactId, orderId, `cross_sell:${orderId}`, addDays(processingAt, 35), JSON.stringify(jobPayload(order))]);
+}
+
+async function restorePreviousCrossSell(client: PoolClient, contactId: string, excludedOrderId: number) {
+  const activeFrom = config.automationsActiveFrom;
+  if (!activeFrom) return;
+  const candidate = await client.query<{ woo_order_id: string; processing_at: Date; raw: WooAutomationOrder }>(`
+    SELECT woo_order_id, processing_at, raw
+    FROM automation_orders
+    WHERE contact_id = $1 AND woo_order_id <> $2
+      AND status IN ('processing', 'completed')
+      AND marketing_opt_in = TRUE
+      AND processing_at >= $3
+    ORDER BY processing_at DESC LIMIT 1
+  `, [contactId, excludedOrderId, activeFrom]);
+  const row = candidate.rows[0];
+  if (row) await scheduleCrossSell(client, contactId, Number(row.woo_order_id), row.processing_at, row.raw);
+}
+
+async function cancelOrderJobs(client: PoolClient, orderId: number, reason: string) {
+  await client.query(`
+    UPDATE automation_jobs SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(), last_error = $2
+    WHERE trigger_order_id = $1 AND status IN ('scheduled', 'ready')
+  `, [orderId, reason]);
+}
+
+function jobPayload(order: WooAutomationOrder) {
+  return {
+    order_id: order.id,
+    order_number: order.number || String(order.id),
+    currency: order.currency,
+    total: order.total,
+    products: (order.line_items || []).map((item) => ({
+      product_id: item.product_id, variation_id: item.variation_id, name: item.name,
+      sku: item.sku, quantity: item.quantity, total: item.total, categories: item._categories || [],
+    })),
+    categories: [...new Set((order.line_items || []).flatMap((item) => (item._categories || []).map((category) => category.name)))],
+  };
+}
+
+export function startAutomationWorker() {
+  const run = async () => {
+    if (config.emblueEnabled) return;
+    try {
+      const result = await pool.query(`
+        UPDATE automation_jobs SET status = 'ready', updated_at = NOW()
+        WHERE status = 'scheduled' AND due_at <= NOW()
+        RETURNING id
+      `);
+      if (result.rowCount) console.log(`${result.rowCount} automatización(es) listas en modo prueba.`);
+    } catch (error) {
+      console.error('No se pudo actualizar la cola de automatizaciones.', error);
+    }
+  };
+  void run();
+  const timer = setInterval(() => void run(), 60_000);
+  timer.unref();
+}
+
+export async function automationStatusHandler(_req: Request, res: Response, next: NextFunction) {
+  try {
+    const counts = await pool.query<{ status: string; automation_type: string; count: string }>(`
+      SELECT status, automation_type, COUNT(*)::text AS count
+      FROM automation_jobs GROUP BY status, automation_type ORDER BY automation_type, status
+    `);
+    res.json({
+      enabled: Boolean(config.automationsActiveFrom), emblueEnabled: config.emblueEnabled,
+      activeFrom: config.automationsActiveFrom?.toISOString() || null, jobs: counts.rows,
+    });
+  } catch (error) { next(error); }
+}
+
+export async function automationJobsHandler(req: Request, res: Response, next: NextFunction) {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
+    const result = await pool.query(`
+      SELECT j.id, j.automation_type, j.trigger_order_id, j.due_at, j.status, j.attempts,
+             j.last_error, j.created_at, j.contact_id, c.marketing_opt_in
+      FROM automation_jobs j JOIN automation_contacts c ON c.id = j.contact_id
+      ORDER BY j.created_at DESC LIMIT $1
+    `, [limit]);
+    res.json({ data: result.rows });
+  } catch (error) { next(error); }
+}
+
+function normalizedBoolean(value: unknown): boolean | null {
+  if (value === undefined || value === null || value === '') return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (['yes', '1', 'true', 'si', 'sí'].includes(normalized)) return true;
+  if (['no', '0', 'false'].includes(normalized)) return false;
+  return null;
+}
+function wooDate(local?: string | null, gmt?: string | null) {
+  const value = gmt ? `${gmt.replace(/Z$/, '')}Z` : local;
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+function numeric(value: unknown) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null; }
+function addDays(value: Date, days: number) { return new Date(value.getTime() + days * 86_400_000); }

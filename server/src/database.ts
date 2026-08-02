@@ -23,6 +23,10 @@ export function missingDatabaseVariables() {
   }).filter(([, value]) => !value).map(([key]) => key);
 }
 
+export function databaseConfigured() {
+  return missingDatabaseVariables().length === 0;
+}
+
 export const pool = new Pool({
   ...(databaseConfig.connectionString
     ? { connectionString: databaseConfig.connectionString }
