@@ -17,7 +17,7 @@ const orderRangeCache = new Map<string, { expires: number; value: Record<string,
 const salesReportCache = new Map<string, { expires: number; value: NativeSalesReport }>();
 app.use(helmet());
 app.use(cors({ origin: config.clientOrigin }));
-app.post('/webhooks/woocommerce/orders', express.raw({ type: 'application/json', limit: '2mb' }), wooOrderWebhookHandler);
+app.post('/webhooks/woocommerce/orders', express.raw({ type: '*/*', limit: '2mb' }), wooOrderWebhookHandler);
 app.use(express.json({ limit: '100kb' }));
 
 const listQuery = z.object({
