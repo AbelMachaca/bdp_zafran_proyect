@@ -222,7 +222,11 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
   const load = () => {
     if (!configured) return;
     setLoading(true); setError('');
-    api<AutomationJobsResponse>(`/automations/jobs?page=${page}&per_page=20&status=${status}&type=${type}&search=${encodeURIComponent(search)}`)
+    const params = new URLSearchParams({ page: String(page), per_page: '20' });
+    if (status) params.set('status', status);
+    if (type) params.set('type', type);
+    if (search.trim()) params.set('search', search.trim());
+    api<AutomationJobsResponse>(`/automations/jobs?${params}`)
       .then(setData).catch((e) => setError(e.message)).finally(() => setLoading(false));
   };
   useEffect(load, [configured, page, status, type]);

@@ -264,12 +264,16 @@ export async function automationStatusHandler(_req: Request, res: Response, next
 
 export async function automationJobsHandler(req: Request, res: Response, next: NextFunction) {
   try {
+    const optionalQueryValue = (schema: z.ZodType) => z.preprocess(
+      (value) => typeof value === 'string' && value.trim() === '' ? undefined : value,
+      schema.optional(),
+    );
     const query = z.object({
       page: z.coerce.number().int().min(1).default(1),
       per_page: z.coerce.number().int().min(1).max(100).default(25),
-      status: z.enum(['scheduled', 'ready', 'processing', 'sent', 'cancelled', 'skipped', 'failed']).optional(),
-      type: z.enum(['post_purchase', 'cross_sell']).optional(),
-      search: z.string().trim().max(100).optional(),
+      status: optionalQueryValue(z.enum(['scheduled', 'ready', 'processing', 'sent', 'cancelled', 'skipped', 'failed'])),
+      type: optionalQueryValue(z.enum(['post_purchase', 'cross_sell'])),
+      search: optionalQueryValue(z.string().trim().max(100)),
     }).parse(req.query);
     const parameters: unknown[] = [];
     const filters: string[] = [];
