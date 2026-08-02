@@ -110,4 +110,6 @@ GET /api/automations/status
 GET /api/automations/jobs?page=1&per_page=25
 ```
 
-El endpoint de trabajos admite los filtros `status`, `type` (`post_purchase` o `cross_sell`) y `search`. El frontend los presenta en la sección **Automatizaciones**, junto con consentimiento, fecha prevista, tiempo restante, pedido disparador, productos, categorías e historial del último intento.
+El endpoint de trabajos admite los filtros `status`, `type` (`post_purchase`, `cross_sell` o `win_back`) y `search`. El frontend los presenta en la sección **Automatizaciones**, junto con consentimiento, fecha prevista, tiempo restante, pedido disparador, productos, categorías e historial del último intento.
+
+Cross-sell se programa 35 días y Win-back 90 días exactos después de que el último pedido entra en `processing`. Una compra posterior reinicia ambos plazos. El consentimiento promocional del contacto es persistente: una aceptación previa no se revoca porque la casilla no se marque nuevamente en otro pedido; únicamente una baja explícita deberá desactivarlo.

@@ -248,7 +248,7 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
     </div>
     <div className="order-toolbar automation-toolbar">
       <div className="search-box"><Search /><input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && refreshFromFirstPage()} placeholder="Correo, cliente o pedido…" /></div>
-      <div className="select-wrap"><select value={type} onChange={(e) => { setType(e.target.value as AutomationType | ''); setPage(1); }}><option value="">Todas las automatizaciones</option><option value="post_purchase">Postcompra</option><option value="cross_sell">Cross-sell</option></select><ChevronDown /></div>
+      <div className="select-wrap"><select value={type} onChange={(e) => { setType(e.target.value as AutomationType | ''); setPage(1); }}><option value="">Todas las automatizaciones</option><option value="post_purchase">Postcompra</option><option value="cross_sell">Cross-sell</option><option value="win_back">Win-back</option></select><ChevronDown /></div>
       <div className="select-wrap"><select value={status} onChange={(e) => { setStatus(e.target.value as AutomationStatus | ''); setPage(1); }}><option value="">Todos los estados</option><option value="scheduled">Programado</option><option value="ready">Listo</option><option value="processing">Enviando</option><option value="sent">Enviado</option><option value="cancelled">Cancelado</option><option value="skipped">Omitido</option><option value="failed">Fallido</option></select><ChevronDown /></div>
       <button className="primary" onClick={refreshFromFirstPage} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Actualizar</button>
     </div>
@@ -257,17 +257,17 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
       <div className="automation-table table-head"><span>Automatización</span><span>Contacto</span><span>Pedido</span><span>Consentimiento</span><span>Estado</span><span>Fecha prevista</span><span>Tiempo restante</span><span /></div>
       {loading ? <Loader /> : data?.data.length ? data.data.map((job) => <Fragment key={job.id}>
         <button className={`automation-table automation-row ${expanded === job.id ? 'open' : ''}`} onClick={() => setExpanded(expanded === job.id ? null : job.id)}>
-          <span className={`automation-kind ${job.automation_type}`}><strong>{automationTypeName(job.automation_type)}</strong><small>{job.automation_type === 'post_purchase' ? '10 días' : '35 días sin recompra'}</small></span>
+          <span className={`automation-kind ${job.automation_type}`}><strong>{automationTypeName(job.automation_type)}</strong><small>{automationDelayLabel(job.automation_type)}</small></span>
           <span className="automation-contact"><strong>{[job.first_name, job.last_name].filter(Boolean).join(' ') || 'Sin nombre'}</strong><small>{job.email}</small></span>
           <span className="order-number">#{job.order_number || job.trigger_order_id}</span>
-          <span className={`consent ${job.order_marketing_opt_in ? 'yes' : 'no'}`}><ShieldCheck />{job.order_marketing_opt_in ? 'Aceptó' : 'No aceptó'}{job.automation_type === 'post_purchase' && <small>No requerido</small>}</span>
+          <AutomationConsent job={job} />
           <AutomationState job={job} emblueEnabled={data.mode.emblueEnabled} />
           <span>{shortDate(job.due_at)}</span><strong className="remaining">{automationRemaining(job)}</strong><ChevronRight className={expanded === job.id ? 'rotated' : ''} />
         </button>
         {expanded === job.id && <AutomationDetail job={job} emblueEnabled={data.mode.emblueEnabled} onSelectOrder={onSelectOrder} />}
       </Fragment>) : <Empty icon={<Workflow />} text="No hay automatizaciones con estos filtros" />}
     </div>
-    {data && <div className="pagination"><span>{data.total} automatizaciones encontradas · {summary?.post_purchase || 0} postcompra · {summary?.cross_sell || 0} cross-sell</span><div><button disabled={page === 1} onClick={() => setPage(page - 1)}><ChevronLeft /></button><b>Página {page}</b><button disabled={page * data.perPage >= data.total} onClick={() => setPage(page + 1)}><ChevronRight /></button></div></div>}
+    {data && <div className="pagination"><span>{data.total} automatizaciones encontradas · {summary?.post_purchase || 0} postcompra · {summary?.cross_sell || 0} cross-sell · {summary?.win_back || 0} win-back</span><div><button disabled={page === 1} onClick={() => setPage(page - 1)}><ChevronLeft /></button><b>Página {page}</b><button disabled={page * data.perPage >= data.total} onClick={() => setPage(page + 1)}><ChevronRight /></button></div></div>}
   </section>;
 }
 
@@ -276,7 +276,7 @@ function AutomationDetail({ job, emblueEnabled, onSelectOrder }: { job: Automati
   return <div className="automation-detail">
     <div className="automation-timeline"><strong>Recorrido</strong><div className="timeline-steps"><span className="done"><i>1</i><b>Compra procesada</b><small>{shortDate(job.processing_at)}</small></span><span className={job.status !== 'cancelled' ? 'done' : ''}><i>2</i><b>Programada</b><small>{shortDate(job.due_at)}</small></span><span className={job.status === 'sent' ? 'done' : job.status === 'failed' ? 'failed' : ''}><i>3</i><b>{emblueEnabled ? 'Envío a emBlue' : 'emBlue en prueba'}</b><small>{job.sent_at ? shortDate(job.sent_at) : automationRemaining(job)}</small></span></div></div>
     <div className="automation-detail-grid">
-      <section><h4>Cliente y consentimiento</h4><Info label="Correo" value={job.email} sensitive /><Info label="Teléfono" value={job.phone} sensitive /><Info label="Consentimiento al comprar" value={job.order_marketing_opt_in ? 'Sí, aceptó promociones' : 'No aceptó promociones'} /><Info label="Consentimiento actual" value={job.current_marketing_opt_in ? 'Activo' : 'No activo'} /><Info label="Fuente del consentimiento" value={job.consent_source || 'No informada'} /></section>
+      <section><h4>Cliente y consentimiento</h4><Info label="Correo" value={job.email} sensitive /><Info label="Teléfono" value={job.phone} sensitive /><Info label="En este pedido" value={job.order_marketing_opt_in ? 'Aceptó promociones' : 'No marcó la casilla'} /><Info label="Consentimiento general" value={job.current_marketing_opt_in ? 'Activo' : 'No activo'} /><Info label="Otorgado" value={shortDate(job.current_marketing_opt_in_at)} /><Info label="Fuente original" value={job.current_consent_source || job.consent_source || 'No informada'} /></section>
       <section><h4>Pedido disparador</h4><Info label="Pedido" value={`#${job.order_number || job.trigger_order_id}`} /><Info label="Estado actual" value={statusNames[job.order_status || ''] || job.order_status} /><Info label="Fecha de compra" value={shortDate(job.date_created)} /><Info label="Total" value={money(job.total || 0)} /><button className="secondary" onClick={() => onSelectOrder(Number(job.trigger_order_id))}>Abrir pedido completo <ChevronRight /></button></section>
       <section className="automation-products"><h4>Contenido para personalización</h4>{categories.length > 0 && <div className="category-tags">{categories.map((category) => <span key={category}>{category}</span>)}</div>}{products.length ? products.map((product, index) => <div className="automation-product" key={`${product.product_id}-${product.variation_id}-${index}`}><span><strong>{product.name}</strong><small>{product.sku ? `SKU ${product.sku} · ` : ''}{product.categories?.map((category) => category.name).join(', ') || 'Sin categoría'}</small></span><b>x{product.quantity}</b></div>) : <small>No se guardaron productos en este evento.</small>}</section>
       <section><h4>Diagnóstico</h4><Info label="Intentos" value={String(job.attempts)} /><Info label="Último intento" value={shortDate(job.latest_attempt_at || undefined)} /><Info label="Resultado" value={job.latest_attempt_outcome || 'Sin intentos todavía'} /><Info label="Código HTTP" value={job.latest_attempt_http_status ? String(job.latest_attempt_http_status) : '—'} />{(job.last_error || job.latest_attempt_error) && <div className="automation-error"><AlertCircle />{job.last_error || job.latest_attempt_error}</div>}</section>
@@ -288,7 +288,13 @@ function AutomationState({ job, emblueEnabled }: { job: AutomationJob; emblueEna
   const labels: Record<AutomationStatus, string> = { scheduled: 'Programado', ready: emblueEnabled ? 'Listo' : 'Listo · prueba', processing: 'Enviando', sent: 'Enviado', cancelled: 'Cancelado', skipped: 'Omitido', failed: 'Fallido' };
   return <span className={`automation-state state-${job.status}`}>{labels[job.status]}</span>;
 }
-function automationTypeName(type: AutomationType) { return type === 'post_purchase' ? 'Postcompra' : 'Cross-sell'; }
+function AutomationConsent({ job }: { job: AutomationJob }) {
+  const inherited = !job.order_marketing_opt_in && job.current_marketing_opt_in;
+  const active = job.order_marketing_opt_in || job.current_marketing_opt_in;
+  return <span className={`consent ${active ? 'yes' : 'no'}`}><ShieldCheck />{job.order_marketing_opt_in ? 'Aceptó' : inherited ? 'Consentimiento previo' : 'No aceptó'}<small>{job.automation_type === 'post_purchase' ? 'No requerido para postcompra' : inherited ? 'No marcó en este pedido' : 'No participa'}</small></span>;
+}
+function automationTypeName(type: AutomationType) { return type === 'post_purchase' ? 'Postcompra' : type === 'cross_sell' ? 'Cross-sell' : 'Win-back'; }
+function automationDelayLabel(type: AutomationType) { return type === 'post_purchase' ? '10 días' : type === 'cross_sell' ? '35 días sin recompra' : '90 días sin recompra'; }
 function automationRemaining(job: AutomationJob) {
   if (job.status === 'sent') return 'Enviado';
   if (job.status === 'cancelled') return 'Cancelado';

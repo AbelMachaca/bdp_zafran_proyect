@@ -120,6 +120,84 @@ const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    name: 'persistent_consent_and_win_back',
+    sql: `
+      ALTER TABLE automation_contacts
+        ADD COLUMN IF NOT EXISTS marketing_opt_in_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS marketing_opt_out_at TIMESTAMPTZ;
+
+      UPDATE automation_contacts c
+      SET marketing_opt_in = TRUE,
+          marketing_opt_in_at = COALESCE(c.marketing_opt_in_at, consent.first_granted_at),
+          marketing_opt_in_source = COALESCE(consent.source, c.marketing_opt_in_source),
+          updated_at = NOW()
+      FROM (
+        SELECT
+          o.contact_id,
+          MIN(COALESCE(o.processing_at, o.date_created, o.first_seen_at)) AS first_granted_at,
+          (ARRAY_AGG(o.marketing_opt_in_source ORDER BY COALESCE(o.processing_at, o.date_created, o.first_seen_at)))[1] AS source
+        FROM automation_orders o
+        WHERE o.contact_id IS NOT NULL AND o.marketing_opt_in = TRUE
+        GROUP BY o.contact_id
+      ) consent
+      WHERE c.id = consent.contact_id;
+
+      UPDATE automation_contacts
+      SET marketing_opt_in_at = COALESCE(marketing_opt_in_at, created_at)
+      WHERE marketing_opt_in = TRUE;
+
+      ALTER TABLE automation_jobs DROP CONSTRAINT IF EXISTS automation_jobs_automation_type_check;
+      ALTER TABLE automation_jobs ADD CONSTRAINT automation_jobs_automation_type_check
+        CHECK (automation_type IN ('post_purchase', 'cross_sell', 'win_back'));
+
+      WITH latest_orders AS (
+        SELECT DISTINCT ON (o.contact_id)
+          o.contact_id, o.woo_order_id, o.processing_at, pp.payload
+        FROM automation_orders o
+        JOIN automation_contacts c ON c.id = o.contact_id AND c.marketing_opt_in = TRUE
+        JOIN automation_jobs pp ON pp.trigger_order_id = o.woo_order_id AND pp.automation_type = 'post_purchase'
+        WHERE o.status IN ('processing', 'completed') AND o.processing_at IS NOT NULL
+        ORDER BY o.contact_id, o.processing_at DESC, o.woo_order_id DESC
+      )
+      UPDATE automation_jobs j
+      SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(),
+          last_error = 'Reprogramado por una compra posterior'
+      FROM latest_orders latest
+      WHERE j.contact_id = latest.contact_id
+        AND j.automation_type IN ('cross_sell', 'win_back')
+        AND j.status IN ('scheduled', 'ready')
+        AND j.trigger_order_id <> latest.woo_order_id;
+
+      WITH latest_orders AS (
+        SELECT DISTINCT ON (o.contact_id)
+          o.contact_id, o.woo_order_id, o.processing_at, pp.payload
+        FROM automation_orders o
+        JOIN automation_contacts c ON c.id = o.contact_id AND c.marketing_opt_in = TRUE
+        JOIN automation_jobs pp ON pp.trigger_order_id = o.woo_order_id AND pp.automation_type = 'post_purchase'
+        WHERE o.status IN ('processing', 'completed') AND o.processing_at IS NOT NULL
+        ORDER BY o.contact_id, o.processing_at DESC, o.woo_order_id DESC
+      ), retention_jobs AS (
+        SELECT 'cross_sell'::text AS automation_type, 35 AS delay_days, * FROM latest_orders
+        UNION ALL
+        SELECT 'win_back'::text AS automation_type, 90 AS delay_days, * FROM latest_orders
+      )
+      INSERT INTO automation_jobs
+        (automation_type, contact_id, trigger_order_id, dedupe_key, due_at, payload)
+      SELECT automation_type, contact_id, woo_order_id,
+        automation_type || ':' || woo_order_id, processing_at + make_interval(days => delay_days), payload
+      FROM retention_jobs
+      ON CONFLICT (dedupe_key) DO UPDATE SET
+        due_at = EXCLUDED.due_at,
+        status = 'scheduled',
+        payload = EXCLUDED.payload,
+        cancelled_at = NULL,
+        last_error = NULL,
+        updated_at = NOW()
+      WHERE automation_jobs.status IN ('cancelled', 'skipped', 'failed');
+    `,
+  },
 ];
 
 export async function runMigrations() {

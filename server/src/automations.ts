@@ -11,6 +11,7 @@ type WooLineItem = {
   quantity?: number; subtotal?: string; total?: string; meta_data?: WooMeta[];
   _categories?: Array<{ id: number; name: string }>;
 };
+type RetentionAutomation = 'cross_sell' | 'win_back';
 export type WooAutomationOrder = {
   id?: number; number?: string; status?: string; currency?: string; total?: string;
   customer_id?: number; date_created?: string; date_created_gmt?: string; date_modified?: string; date_modified_gmt?: string;
@@ -54,12 +55,22 @@ export function marketingConsent(metaItems: WooMeta[] = []) {
   return { allowed: false, source: null };
 }
 
+export function retainedMarketingConsent(previouslyAllowed: boolean, allowedInOrder: boolean) {
+  return previouslyAllowed || allowedInOrder;
+}
+
+export function automationDueAt(type: 'post_purchase' | RetentionAutomation, processingAt: Date) {
+  const delayDays = type === 'post_purchase' ? 10 : type === 'cross_sell' ? 35 : 90;
+  return addDays(processingAt, delayDays);
+}
+
 export async function persistWooOrder(client: PoolClient, order: WooAutomationOrder) {
   if (!Number.isInteger(order.id) || Number(order.id) <= 0) throw new Error('El webhook no contiene un ID de pedido válido');
   const orderId = Number(order.id);
   const status = String(order.status || 'unknown');
   const email = String(order.billing?.email || '').trim().toLowerCase();
   const consent = marketingConsent(order.meta_data);
+  let effectiveConsent = consent.allowed;
   const existing = await client.query<{ status: string; processing_at: Date | null; contact_id: string | null }>(
     'SELECT status, processing_at, contact_id FROM automation_orders WHERE woo_order_id = $1 FOR UPDATE', [orderId],
   );
@@ -72,25 +83,39 @@ export async function persistWooOrder(client: PoolClient, order: WooAutomationOr
 
   let contactId: string | null = previous?.contact_id || null;
   if (email) {
-    const contact = await client.query<{ id: string }>(`
+    const contact = await client.query<{ id: string; marketing_opt_in: boolean }>(`
       INSERT INTO automation_contacts
-        (email, woo_customer_id, first_name, last_name, phone, marketing_opt_in, marketing_opt_in_source, raw)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+        (email, woo_customer_id, first_name, last_name, phone, marketing_opt_in, marketing_opt_in_source,
+         marketing_opt_in_at, raw)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $6 THEN NOW() ELSE NULL END, $8::jsonb)
       ON CONFLICT (email) DO UPDATE SET
         woo_customer_id = COALESCE(EXCLUDED.woo_customer_id, automation_contacts.woo_customer_id),
         first_name = EXCLUDED.first_name,
         last_name = EXCLUDED.last_name,
         phone = EXCLUDED.phone,
-        marketing_opt_in = EXCLUDED.marketing_opt_in,
-        marketing_opt_in_source = EXCLUDED.marketing_opt_in_source,
+        marketing_opt_in = CASE WHEN automation_contacts.marketing_opt_out_at IS NOT NULL THEN FALSE
+          ELSE automation_contacts.marketing_opt_in OR EXCLUDED.marketing_opt_in END,
+        marketing_opt_in_source = CASE WHEN automation_contacts.marketing_opt_out_at IS NULL
+          AND EXCLUDED.marketing_opt_in AND NOT automation_contacts.marketing_opt_in
+          THEN EXCLUDED.marketing_opt_in_source ELSE automation_contacts.marketing_opt_in_source END,
+        marketing_opt_in_at = CASE
+          WHEN automation_contacts.marketing_opt_out_at IS NULL
+            AND EXCLUDED.marketing_opt_in AND NOT automation_contacts.marketing_opt_in THEN NOW()
+          ELSE automation_contacts.marketing_opt_in_at END,
         raw = EXCLUDED.raw,
         updated_at = NOW()
-      RETURNING id
+      RETURNING id, marketing_opt_in
     `, [
       email, order.customer_id || null, order.billing?.first_name || '', order.billing?.last_name || '',
       order.billing?.phone || '', consent.allowed, consent.source, JSON.stringify(order.billing || {}),
     ]);
     contactId = contact.rows[0]?.id || null;
+    if (contact.rows[0]) effectiveConsent = contact.rows[0].marketing_opt_in;
+  } else if (contactId) {
+    const contact = await client.query<{ marketing_opt_in: boolean }>(
+      'SELECT marketing_opt_in FROM automation_contacts WHERE id = $1', [contactId],
+    );
+    effectiveConsent = contact.rows[0]?.marketing_opt_in || false;
   }
 
   await client.query(`
@@ -137,7 +162,7 @@ export async function persistWooOrder(client: PoolClient, order: WooAutomationOr
 
   if (invalidStatuses.has(status)) {
     await cancelOrderJobs(client, orderId, `Pedido en estado ${status}`);
-    if (contactId) await restorePreviousCrossSell(client, contactId, orderId);
+    if (contactId) await restorePreviousRetention(client, contactId, orderId);
     return { orderId, status, action: 'cancelled' as const };
   }
 
@@ -150,7 +175,7 @@ export async function persistWooOrder(client: PoolClient, order: WooAutomationOr
     await ensurePostPurchase(client, contactId, orderId, processingAt, order);
   }
   if (enteredProcessing) {
-    await resetCrossSell(client, contactId, orderId, processingAt, order, consent.allowed);
+    await resetRetention(client, contactId, orderId, processingAt, order, effectiveConsent);
   }
   return { orderId, status, action: 'scheduled' as const };
 }
@@ -161,27 +186,31 @@ async function ensurePostPurchase(client: PoolClient, contactId: string, orderId
       (automation_type, contact_id, trigger_order_id, dedupe_key, due_at, payload)
     VALUES ('post_purchase', $1, $2, $3, $4, $5::jsonb)
     ON CONFLICT (dedupe_key) DO NOTHING
-  `, [contactId, orderId, `post_purchase:${orderId}`, addDays(processingAt, 10), JSON.stringify(jobPayload(order))]);
+  `, [contactId, orderId, `post_purchase:${orderId}`, automationDueAt('post_purchase', processingAt), JSON.stringify(jobPayload(order))]);
 }
 
-async function resetCrossSell(
+async function resetRetention(
   client: PoolClient, contactId: string, orderId: number, processingAt: Date, order: WooAutomationOrder, allowed: boolean,
 ) {
   await client.query(`
     UPDATE automation_jobs SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(),
       last_error = 'Reprogramado por una compra posterior'
-    WHERE contact_id = $1 AND automation_type = 'cross_sell'
+    WHERE contact_id = $1 AND automation_type IN ('cross_sell', 'win_back')
       AND status IN ('scheduled', 'ready') AND trigger_order_id <> $2
   `, [contactId, orderId]);
   if (!allowed) return;
-  await scheduleCrossSell(client, contactId, orderId, processingAt, order);
+  await scheduleRetention(client, 'cross_sell', contactId, orderId, processingAt, order);
+  await scheduleRetention(client, 'win_back', contactId, orderId, processingAt, order);
 }
 
-async function scheduleCrossSell(client: PoolClient, contactId: string, orderId: number, processingAt: Date, order: WooAutomationOrder) {
+async function scheduleRetention(
+  client: PoolClient, type: RetentionAutomation, contactId: string, orderId: number,
+  processingAt: Date, order: WooAutomationOrder,
+) {
   await client.query(`
     INSERT INTO automation_jobs
       (automation_type, contact_id, trigger_order_id, dedupe_key, due_at, payload)
-    VALUES ('cross_sell', $1, $2, $3, $4, $5::jsonb)
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb)
     ON CONFLICT (dedupe_key) DO UPDATE SET
       due_at = EXCLUDED.due_at,
       status = 'scheduled',
@@ -190,23 +219,26 @@ async function scheduleCrossSell(client: PoolClient, contactId: string, orderId:
       last_error = NULL,
       updated_at = NOW()
     WHERE automation_jobs.status IN ('cancelled', 'skipped', 'failed')
-  `, [contactId, orderId, `cross_sell:${orderId}`, addDays(processingAt, 35), JSON.stringify(jobPayload(order))]);
+  `, [type, contactId, orderId, `${type}:${orderId}`, automationDueAt(type, processingAt), JSON.stringify(jobPayload(order))]);
 }
 
-async function restorePreviousCrossSell(client: PoolClient, contactId: string, excludedOrderId: number) {
+async function restorePreviousRetention(client: PoolClient, contactId: string, excludedOrderId: number) {
   const activeFrom = config.automationsActiveFrom;
   if (!activeFrom) return;
   const candidate = await client.query<{ woo_order_id: string; processing_at: Date; raw: WooAutomationOrder }>(`
     SELECT woo_order_id, processing_at, raw
-    FROM automation_orders
-    WHERE contact_id = $1 AND woo_order_id <> $2
+    FROM automation_orders o
+    WHERE o.contact_id = $1 AND o.woo_order_id <> $2
       AND status IN ('processing', 'completed')
-      AND marketing_opt_in = TRUE
       AND processing_at >= $3
+      AND EXISTS (SELECT 1 FROM automation_contacts c WHERE c.id = o.contact_id AND c.marketing_opt_in = TRUE)
     ORDER BY processing_at DESC LIMIT 1
   `, [contactId, excludedOrderId, activeFrom]);
   const row = candidate.rows[0];
-  if (row) await scheduleCrossSell(client, contactId, Number(row.woo_order_id), row.processing_at, row.raw);
+  if (row) {
+    await scheduleRetention(client, 'cross_sell', contactId, Number(row.woo_order_id), row.processing_at, row.raw);
+    await scheduleRetention(client, 'win_back', contactId, Number(row.woo_order_id), row.processing_at, row.raw);
+  }
 }
 
 async function cancelOrderJobs(client: PoolClient, orderId: number, reason: string) {
@@ -234,6 +266,30 @@ export function startAutomationWorker() {
   const run = async () => {
     if (config.emblueEnabled) return;
     try {
+      await pool.query(`
+        UPDATE automation_jobs j
+        SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(),
+          last_error = CASE
+            WHEN NOT c.marketing_opt_in THEN 'El contacto no tiene consentimiento promocional activo'
+            WHEN o.status IN ('cancelled', 'failed', 'refunded', 'trash') THEN 'El pedido disparador dejó de ser válido'
+            ELSE 'Existe una compra posterior'
+          END
+        FROM automation_contacts c, automation_orders o
+        WHERE j.contact_id = c.id AND j.trigger_order_id = o.woo_order_id
+          AND j.automation_type IN ('cross_sell', 'win_back')
+          AND j.status = 'scheduled' AND j.due_at <= NOW()
+          AND (
+            NOT c.marketing_opt_in
+            OR o.status IN ('cancelled', 'failed', 'refunded', 'trash')
+            OR EXISTS (
+              SELECT 1 FROM automation_orders newer
+              WHERE newer.contact_id = j.contact_id
+                AND newer.woo_order_id <> j.trigger_order_id
+                AND newer.status IN ('processing', 'completed')
+                AND newer.processing_at > o.processing_at
+            )
+          )
+      `);
       const result = await pool.query(`
         UPDATE automation_jobs SET status = 'ready', updated_at = NOW()
         WHERE status = 'scheduled' AND due_at <= NOW()
@@ -272,7 +328,7 @@ export async function automationJobsHandler(req: Request, res: Response, next: N
       page: z.coerce.number().int().min(1).default(1),
       per_page: z.coerce.number().int().min(1).max(100).default(25),
       status: optionalQueryValue(z.enum(['scheduled', 'ready', 'processing', 'sent', 'cancelled', 'skipped', 'failed'])),
-      type: optionalQueryValue(z.enum(['post_purchase', 'cross_sell'])),
+      type: optionalQueryValue(z.enum(['post_purchase', 'cross_sell', 'win_back'])),
       search: optionalQueryValue(z.string().trim().max(100)),
     }).parse(req.query);
     const parameters: unknown[] = [];
@@ -296,7 +352,8 @@ export async function automationJobsHandler(req: Request, res: Response, next: N
           COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
           COUNT(*) FILTER (WHERE status IN ('failed', 'skipped'))::int AS problems,
           COUNT(*) FILTER (WHERE automation_type = 'post_purchase')::int AS post_purchase,
-          COUNT(*) FILTER (WHERE automation_type = 'cross_sell')::int AS cross_sell
+          COUNT(*) FILTER (WHERE automation_type = 'cross_sell')::int AS cross_sell,
+          COUNT(*) FILTER (WHERE automation_type = 'win_back')::int AS win_back
         FROM automation_jobs
       `),
       pool.query<{ count: number }>(`
@@ -312,6 +369,8 @@ export async function automationJobsHandler(req: Request, res: Response, next: N
           EXTRACT(EPOCH FROM (j.due_at - NOW()))::bigint AS remaining_seconds,
           c.id AS contact_id, c.email, c.first_name, c.last_name, c.phone,
           c.marketing_opt_in AS current_marketing_opt_in,
+          c.marketing_opt_in_source AS current_consent_source,
+          c.marketing_opt_in_at AS current_marketing_opt_in_at,
           o.order_number, o.status AS order_status, o.currency, o.total, o.date_created,
           o.processing_at, o.marketing_opt_in AS order_marketing_opt_in,
           o.marketing_opt_in_source AS consent_source,

@@ -2,7 +2,7 @@ export type Health = {
   ok: boolean; configured: boolean; databaseConfigured?: boolean; automationsConfigured?: boolean;
   storeUrl: string; mode: string;
 };
-export type AutomationType = 'post_purchase' | 'cross_sell';
+export type AutomationType = 'post_purchase' | 'cross_sell' | 'win_back';
 export type AutomationStatus = 'scheduled' | 'ready' | 'processing' | 'sent' | 'cancelled' | 'skipped' | 'failed';
 export type AutomationProduct = {
   product_id?: number; variation_id?: number; name: string; sku?: string; quantity: number; total?: string;
@@ -12,7 +12,8 @@ export type AutomationJob = {
   id: string; automation_type: AutomationType; trigger_order_id: string; due_at: string; status: AutomationStatus;
   attempts: number; last_error?: string | null; created_at: string; updated_at: string; sent_at?: string | null;
   cancelled_at?: string | null; remaining_seconds: number | string; email: string; first_name?: string; last_name?: string;
-  phone?: string; current_marketing_opt_in: boolean; order_number?: string; order_status?: string; currency?: string;
+  phone?: string; current_marketing_opt_in: boolean; current_consent_source?: string; current_marketing_opt_in_at?: string;
+  order_number?: string; order_status?: string; currency?: string;
   total?: string; date_created?: string; processing_at?: string; order_marketing_opt_in: boolean; consent_source?: string;
   latest_attempt_outcome?: string | null; latest_attempt_http_status?: number | null; latest_attempt_error?: string | null;
   latest_attempt_at?: string | null;
@@ -24,7 +25,7 @@ export type AutomationJob = {
 export type AutomationJobsResponse = {
   summary: {
     total: number; scheduled: number; ready: number; sent: number; cancelled: number; problems: number;
-    post_purchase: number; cross_sell: number;
+    post_purchase: number; cross_sell: number; win_back: number;
   };
   data: AutomationJob[]; total: number; page: number; perPage: number;
   mode: { enabled: boolean; emblueEnabled: boolean };
