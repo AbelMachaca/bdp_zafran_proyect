@@ -23,9 +23,15 @@ export function parseWooPayload(body: Buffer): WooAutomationOrder & { webhook_id
   }
 }
 
+export function isWooPing(body: Buffer) {
+  return /^webhook_id=\d+$/.test(body.toString('utf8').trim());
+}
+
 export async function wooOrderWebhookHandler(req: Request, res: Response, next: NextFunction) {
   const body = Buffer.isBuffer(req.body) ? req.body : Buffer.from('');
   const signature = String(req.header('x-wc-webhook-signature') || '');
+  // WooCommerce's creation ping is intentionally unsigned. It contains no order data.
+  if (isWooPing(body)) return res.status(200).json({ ok: true, ping: true });
   if (!config.wooWebhookSecret) return res.status(503).json({ error: 'El receptor todavía no tiene configurado WC_WEBHOOK_SECRET' });
   if (!validWooSignature(body, signature, config.wooWebhookSecret)) {
     console.warn('Firma de WooCommerce inválida.', {
@@ -38,7 +44,7 @@ export async function wooOrderWebhookHandler(req: Request, res: Response, next: 
     const payload = parseWooPayload(body);
     const topic = String(req.header('x-wc-webhook-topic') || 'unknown');
     const deliveryId = String(req.header('x-wc-webhook-delivery-id') || crypto.createHash('sha256').update(body).digest('hex'));
-    if (!payload.id) return res.status(200).json({ ok: true, ping: true });
+    if (!payload.id) return res.status(400).json({ error: 'El webhook no contiene un pedido' });
 
     const event = await pool.query<{ id: string }>(`
       INSERT INTO woocommerce_events (delivery_id, topic, resource_id, payload)
