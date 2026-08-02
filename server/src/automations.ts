@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import type { PoolClient } from 'pg';
+import { z } from 'zod';
 import { pool } from './database.js';
 import { config } from './config.js';
 import { wooGet } from './woocommerce.js';
@@ -263,14 +264,75 @@ export async function automationStatusHandler(_req: Request, res: Response, next
 
 export async function automationJobsHandler(req: Request, res: Response, next: NextFunction) {
   try {
-    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 200);
-    const result = await pool.query(`
-      SELECT j.id, j.automation_type, j.trigger_order_id, j.due_at, j.status, j.attempts,
-             j.last_error, j.created_at, j.contact_id, c.marketing_opt_in
-      FROM automation_jobs j JOIN automation_contacts c ON c.id = j.contact_id
-      ORDER BY j.created_at DESC LIMIT $1
-    `, [limit]);
-    res.json({ data: result.rows });
+    const query = z.object({
+      page: z.coerce.number().int().min(1).default(1),
+      per_page: z.coerce.number().int().min(1).max(100).default(25),
+      status: z.enum(['scheduled', 'ready', 'processing', 'sent', 'cancelled', 'skipped', 'failed']).optional(),
+      type: z.enum(['post_purchase', 'cross_sell']).optional(),
+      search: z.string().trim().max(100).optional(),
+    }).parse(req.query);
+    const parameters: unknown[] = [];
+    const filters: string[] = [];
+    if (query.status) { parameters.push(query.status); filters.push(`j.status = $${parameters.length}`); }
+    if (query.type) { parameters.push(query.type); filters.push(`j.automation_type = $${parameters.length}`); }
+    if (query.search) {
+      parameters.push(`%${query.search}%`);
+      const index = parameters.length;
+      filters.push(`(c.email ILIKE $${index} OR c.first_name ILIKE $${index} OR c.last_name ILIKE $${index}
+        OR o.order_number ILIKE $${index} OR o.woo_order_id::text ILIKE $${index})`);
+    }
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+    const offset = (query.page - 1) * query.per_page;
+    const [summary, total, jobs] = await Promise.all([
+      pool.query(`
+        SELECT COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE status = 'scheduled')::int AS scheduled,
+          COUNT(*) FILTER (WHERE status = 'ready')::int AS ready,
+          COUNT(*) FILTER (WHERE status = 'sent')::int AS sent,
+          COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
+          COUNT(*) FILTER (WHERE status IN ('failed', 'skipped'))::int AS problems,
+          COUNT(*) FILTER (WHERE automation_type = 'post_purchase')::int AS post_purchase,
+          COUNT(*) FILTER (WHERE automation_type = 'cross_sell')::int AS cross_sell
+        FROM automation_jobs
+      `),
+      pool.query<{ count: number }>(`
+        SELECT COUNT(*)::int AS count
+        FROM automation_jobs j
+        JOIN automation_contacts c ON c.id = j.contact_id
+        JOIN automation_orders o ON o.woo_order_id = j.trigger_order_id
+        ${where}
+      `, parameters),
+      pool.query(`
+        SELECT j.id, j.automation_type, j.trigger_order_id, j.due_at, j.status, j.attempts,
+          j.last_error, j.created_at, j.updated_at, j.sent_at, j.cancelled_at, j.payload,
+          EXTRACT(EPOCH FROM (j.due_at - NOW()))::bigint AS remaining_seconds,
+          c.id AS contact_id, c.email, c.first_name, c.last_name, c.phone,
+          c.marketing_opt_in AS current_marketing_opt_in,
+          o.order_number, o.status AS order_status, o.currency, o.total, o.date_created,
+          o.processing_at, o.marketing_opt_in AS order_marketing_opt_in,
+          o.marketing_opt_in_source AS consent_source,
+          attempt.outcome AS last_attempt_outcome, attempt.http_status AS last_attempt_http_status,
+          attempt.error AS last_attempt_error, attempt.attempted_at AS last_attempt_at
+        FROM automation_jobs j
+        JOIN automation_contacts c ON c.id = j.contact_id
+        JOIN automation_orders o ON o.woo_order_id = j.trigger_order_id
+        LEFT JOIN LATERAL (
+          SELECT outcome, http_status, error, attempted_at
+          FROM automation_attempts WHERE job_id = j.id ORDER BY attempted_at DESC LIMIT 1
+        ) attempt ON TRUE
+        ${where}
+        ORDER BY
+          CASE WHEN j.status IN ('scheduled', 'ready', 'processing') THEN 0 ELSE 1 END,
+          CASE WHEN j.status IN ('scheduled', 'ready', 'processing') THEN j.due_at END ASC,
+          j.created_at DESC
+        LIMIT $${parameters.length + 1} OFFSET $${parameters.length + 2}
+      `, [...parameters, query.per_page, offset]),
+    ]);
+    res.json({
+      summary: summary.rows[0], data: jobs.rows, total: total.rows[0]?.count || 0,
+      page: query.page, perPage: query.per_page,
+      mode: { enabled: Boolean(config.automationsActiveFrom), emblueEnabled: config.emblueEnabled },
+    });
   } catch (error) { next(error); }
 }
 

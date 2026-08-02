@@ -107,5 +107,7 @@ Comprobaciones disponibles:
 ```text
 GET /api/health
 GET /api/automations/status
-GET /api/automations/jobs?limit=50
+GET /api/automations/jobs?page=1&per_page=25
 ```
+
+El endpoint de trabajos admite los filtros `status`, `type` (`post_purchase` o `cross_sell`) y `search`. El frontend los presenta en la sección **Automatizaciones**, junto con consentimiento, fecha prevista, tiempo restante, pedido disparador, productos, categorías e historial del último intento.

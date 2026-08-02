@@ -1,15 +1,15 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Activity, AlertCircle, BadgeDollarSign, Boxes, ChevronDown, ChevronLeft, ChevronRight,
   CircleDollarSign, ClipboardList, Code2, Database, ExternalLink, Eye, FileJson, Gauge, Globe2,
   Layers3, LockKeyhole, MapPin, Megaphone, Menu, MousePointerClick, PackageSearch, RefreshCw,
   Search, ServerCog, ShoppingBag, ShoppingCart, Smartphone, Tag, TrendingDown, TrendingUp,
-  Truck, UserRound, UsersRound, WalletCards, X,
+  Truck, UserRound, UsersRound, WalletCards, Workflow, Mail, Clock, ShieldCheck, CheckCircle2, X,
 } from 'lucide-react';
 import { api, money, shortDate } from './api';
-import type { Aggregate, CapabilityResponse, Dashboard, Health, Meta, Order } from './types';
+import type { Aggregate, AutomationJob, AutomationJobsResponse, AutomationStatus, AutomationType, CapabilityResponse, Dashboard, Health, Meta, Order } from './types';
 
-type View = 'dashboard' | 'orders' | 'attribution' | 'capabilities' | 'explorer';
+type View = 'dashboard' | 'orders' | 'automations' | 'attribution' | 'capabilities' | 'explorer';
 const today = new Date();
 const initialFrom = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
 const initialTo = today.toISOString().slice(0, 10);
@@ -33,6 +33,7 @@ export default function App() {
         <nav>
           <Nav active={view === 'dashboard'} icon={<Gauge />} onClick={() => navigate('dashboard')}>Resumen</Nav>
           <Nav active={view === 'orders'} icon={<ShoppingCart />} onClick={() => navigate('orders')}>Pedidos</Nav>
+          <Nav active={view === 'automations'} icon={<Workflow />} onClick={() => navigate('automations')}>Automatizaciones</Nav>
           <Nav active={view === 'attribution'} icon={<Megaphone />} onClick={() => navigate('attribution')}>Origen y zonas</Nav>
           <Nav active={view === 'capabilities'} icon={<Layers3 />} onClick={() => navigate('capabilities')}>Todo lo disponible</Nav>
           <Nav active={view === 'explorer'} icon={<Code2 />} onClick={() => navigate('explorer')}>Explorador API</Nav>
@@ -54,6 +55,7 @@ export default function App() {
         {!health?.configured && health && <SetupBanner />}
         {view === 'dashboard' && <DashboardView configured={!!health?.configured} />}
         {view === 'orders' && (selectedOrder ? <OrderDetail id={selectedOrder} onBack={() => setSelectedOrder(null)} /> : <OrdersView configured={!!health?.configured} onSelect={openOrder} />)}
+        {view === 'automations' && <AutomationsView configured={!!health?.databaseConfigured} onSelectOrder={openOrder} />}
         {view === 'attribution' && <AttributionView configured={!!health?.configured} onSelectOrder={openOrder} />}
         {view === 'capabilities' && <CapabilitiesView />}
         {view === 'explorer' && <ExplorerView configured={!!health?.configured} />}
@@ -209,6 +211,90 @@ function AttributionView({ configured, onSelectOrder }: { configured: boolean; o
     </div>
     {drilldown && <Modal title={drilldown.title} onClose={() => setDrilldown(null)}>{ordersLoading ? <Loader /> : <div className="drilldown-orders"><div className="drilldown-head"><strong>{orders.length} pedidos encontrados</strong><span>Seleccioná un pedido para abrir su ficha completa · {from} — {to}</span></div><div className="drilldown-table table-head"><span>Pedido</span><span>Cliente</span><span>Fecha</span><span>Estado</span><span>Origen / zona</span><span>Total neto</span><span /></div>{orders.map((order) => <button className="drilldown-table drilldown-row" key={order.id} onClick={() => onSelectOrder(order.id)} aria-label={`Abrir pedido ${order.number || order.id}`}><b>#{order.number || order.id}</b><span>{order.customer}</span><span>{shortDate(order.date_created)}</span><Status value={order.status} /><span>{drilldown.dimension === 'province' || drilldown.dimension === 'city' ? order.city : `${order.source} · ${order.campaign}`}</span><strong>{money(order.total)}</strong><ChevronRight /></button>)}</div>}</Modal>}
   </section>;
+}
+
+function AutomationsView({ configured, onSelectOrder }: { configured: boolean; onSelectOrder: (id: number) => void }) {
+  const [data, setData] = useState<AutomationJobsResponse | null>(null);
+  const [page, setPage] = useState(1); const [status, setStatus] = useState<AutomationStatus | ''>('');
+  const [type, setType] = useState<AutomationType | ''>(''); const [search, setSearch] = useState('');
+  const [expanded, setExpanded] = useState<string | null>(null); const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(''); const [, setClock] = useState(Date.now());
+  const load = () => {
+    if (!configured) return;
+    setLoading(true); setError('');
+    api<AutomationJobsResponse>(`/automations/jobs?page=${page}&per_page=20&status=${status}&type=${type}&search=${encodeURIComponent(search)}`)
+      .then(setData).catch((e) => setError(e.message)).finally(() => setLoading(false));
+  };
+  useEffect(load, [configured, page, status, type]);
+  useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 60_000); return () => window.clearInterval(timer); }, []);
+  const refreshFromFirstPage = () => page === 1 ? load() : setPage(1);
+  const summary = data?.summary;
+  return <section className="page automations-page">
+    <PageTitle eyebrow="CICLO DE CLIENTES" title="Automatizaciones" subtitle="Seguimiento completo desde la compra procesada hasta el envío a emBlue." />
+    {!configured && <ErrorBox message="La base de datos de automatizaciones todavía no está configurada." />}
+    {data && <div className={`automation-mode ${data.mode.emblueEnabled ? 'live' : 'test'}`}>
+      <div>{data.mode.emblueEnabled ? <CheckCircle2 /> : <AlertCircle />}<span><strong>{data.mode.emblueEnabled ? 'Envíos a emBlue activos' : 'Modo prueba: emBlue desactivado'}</strong><small>{data.mode.emblueEnabled ? 'Los trabajos vencidos pueden enviarse automáticamente.' : 'Los eventos se reciben y programan, pero ningún correo sale todavía.'}</small></span></div>
+      <span>{data.mode.enabled ? 'Programación activa' : 'Programación inactiva'}</span>
+    </div>}
+    <div className="metrics-grid automation-metrics">
+      <Metric label="Programados" value={summary?.scheduled ?? '—'} note="Esperando su fecha prevista" icon={<Clock />} accent="forest" />
+      <Metric label="Listos" value={summary?.ready ?? '—'} note="Fecha alcanzada; pendientes de emBlue" icon={<Mail />} accent="amber" />
+      <Metric label="Enviados" value={summary?.sent ?? '—'} note="Entrega registrada correctamente" icon={<CheckCircle2 />} accent="blue" />
+      <Metric label="Cancelados o con problema" value={summary ? summary.cancelled + summary.problems : '—'} note="Cancelados, omitidos o fallidos" icon={<AlertCircle />} accent="plum" />
+    </div>
+    <div className="order-toolbar automation-toolbar">
+      <div className="search-box"><Search /><input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && refreshFromFirstPage()} placeholder="Correo, cliente o pedido…" /></div>
+      <div className="select-wrap"><select value={type} onChange={(e) => { setType(e.target.value as AutomationType | ''); setPage(1); }}><option value="">Todas las automatizaciones</option><option value="post_purchase">Postcompra</option><option value="cross_sell">Cross-sell</option></select><ChevronDown /></div>
+      <div className="select-wrap"><select value={status} onChange={(e) => { setStatus(e.target.value as AutomationStatus | ''); setPage(1); }}><option value="">Todos los estados</option><option value="scheduled">Programado</option><option value="ready">Listo</option><option value="processing">Enviando</option><option value="sent">Enviado</option><option value="cancelled">Cancelado</option><option value="skipped">Omitido</option><option value="failed">Fallido</option></select><ChevronDown /></div>
+      <button className="primary" onClick={refreshFromFirstPage} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Actualizar</button>
+    </div>
+    {error && <ErrorBox message={error} />}
+    <div className="table-panel automation-panel">
+      <div className="automation-table table-head"><span>Automatización</span><span>Contacto</span><span>Pedido</span><span>Consentimiento</span><span>Estado</span><span>Fecha prevista</span><span>Tiempo restante</span><span /></div>
+      {loading ? <Loader /> : data?.data.length ? data.data.map((job) => <Fragment key={job.id}>
+        <button className={`automation-table automation-row ${expanded === job.id ? 'open' : ''}`} onClick={() => setExpanded(expanded === job.id ? null : job.id)}>
+          <span className={`automation-kind ${job.automation_type}`}><strong>{automationTypeName(job.automation_type)}</strong><small>{job.automation_type === 'post_purchase' ? '10 días' : '35 días sin recompra'}</small></span>
+          <span className="automation-contact"><strong>{[job.first_name, job.last_name].filter(Boolean).join(' ') || 'Sin nombre'}</strong><small>{job.email}</small></span>
+          <span className="order-number">#{job.order_number || job.trigger_order_id}</span>
+          <span className={`consent ${job.order_marketing_opt_in ? 'yes' : 'no'}`}><ShieldCheck />{job.order_marketing_opt_in ? 'Aceptó' : 'No aceptó'}{job.automation_type === 'post_purchase' && <small>No requerido</small>}</span>
+          <AutomationState job={job} emblueEnabled={data.mode.emblueEnabled} />
+          <span>{shortDate(job.due_at)}</span><strong className="remaining">{automationRemaining(job)}</strong><ChevronRight className={expanded === job.id ? 'rotated' : ''} />
+        </button>
+        {expanded === job.id && <AutomationDetail job={job} emblueEnabled={data.mode.emblueEnabled} onSelectOrder={onSelectOrder} />}
+      </Fragment>) : <Empty icon={<Workflow />} text="No hay automatizaciones con estos filtros" />}
+    </div>
+    {data && <div className="pagination"><span>{data.total} automatizaciones encontradas · {summary?.post_purchase || 0} postcompra · {summary?.cross_sell || 0} cross-sell</span><div><button disabled={page === 1} onClick={() => setPage(page - 1)}><ChevronLeft /></button><b>Página {page}</b><button disabled={page * data.perPage >= data.total} onClick={() => setPage(page + 1)}><ChevronRight /></button></div></div>}
+  </section>;
+}
+
+function AutomationDetail({ job, emblueEnabled, onSelectOrder }: { job: AutomationJob; emblueEnabled: boolean; onSelectOrder: (id: number) => void }) {
+  const products = job.payload?.products || []; const categories = job.payload?.categories || [];
+  return <div className="automation-detail">
+    <div className="automation-timeline"><strong>Recorrido</strong><div className="timeline-steps"><span className="done"><i>1</i><b>Compra procesada</b><small>{shortDate(job.processing_at)}</small></span><span className={job.status !== 'cancelled' ? 'done' : ''}><i>2</i><b>Programada</b><small>{shortDate(job.due_at)}</small></span><span className={job.status === 'sent' ? 'done' : job.status === 'failed' ? 'failed' : ''}><i>3</i><b>{emblueEnabled ? 'Envío a emBlue' : 'emBlue en prueba'}</b><small>{job.sent_at ? shortDate(job.sent_at) : automationRemaining(job)}</small></span></div></div>
+    <div className="automation-detail-grid">
+      <section><h4>Cliente y consentimiento</h4><Info label="Correo" value={job.email} sensitive /><Info label="Teléfono" value={job.phone} sensitive /><Info label="Consentimiento al comprar" value={job.order_marketing_opt_in ? 'Sí, aceptó promociones' : 'No aceptó promociones'} /><Info label="Consentimiento actual" value={job.current_marketing_opt_in ? 'Activo' : 'No activo'} /><Info label="Fuente del consentimiento" value={job.consent_source || 'No informada'} /></section>
+      <section><h4>Pedido disparador</h4><Info label="Pedido" value={`#${job.order_number || job.trigger_order_id}`} /><Info label="Estado actual" value={statusNames[job.order_status || ''] || job.order_status} /><Info label="Fecha de compra" value={shortDate(job.date_created)} /><Info label="Total" value={money(job.total || 0)} /><button className="secondary" onClick={() => onSelectOrder(Number(job.trigger_order_id))}>Abrir pedido completo <ChevronRight /></button></section>
+      <section className="automation-products"><h4>Contenido para personalización</h4>{categories.length > 0 && <div className="category-tags">{categories.map((category) => <span key={category}>{category}</span>)}</div>}{products.length ? products.map((product, index) => <div className="automation-product" key={`${product.product_id}-${product.variation_id}-${index}`}><span><strong>{product.name}</strong><small>{product.sku ? `SKU ${product.sku} · ` : ''}{product.categories?.map((category) => category.name).join(', ') || 'Sin categoría'}</small></span><b>x{product.quantity}</b></div>) : <small>No se guardaron productos en este evento.</small>}</section>
+      <section><h4>Diagnóstico</h4><Info label="Intentos" value={String(job.attempts)} /><Info label="Último intento" value={shortDate(job.latest_attempt_at || undefined)} /><Info label="Resultado" value={job.latest_attempt_outcome || 'Sin intentos todavía'} /><Info label="Código HTTP" value={job.latest_attempt_http_status ? String(job.latest_attempt_http_status) : '—'} />{(job.last_error || job.latest_attempt_error) && <div className="automation-error"><AlertCircle />{job.last_error || job.latest_attempt_error}</div>}</section>
+    </div>
+  </div>;
+}
+
+function AutomationState({ job, emblueEnabled }: { job: AutomationJob; emblueEnabled: boolean }) {
+  const labels: Record<AutomationStatus, string> = { scheduled: 'Programado', ready: emblueEnabled ? 'Listo' : 'Listo · prueba', processing: 'Enviando', sent: 'Enviado', cancelled: 'Cancelado', skipped: 'Omitido', failed: 'Fallido' };
+  return <span className={`automation-state state-${job.status}`}>{labels[job.status]}</span>;
+}
+function automationTypeName(type: AutomationType) { return type === 'post_purchase' ? 'Postcompra' : 'Cross-sell'; }
+function automationRemaining(job: AutomationJob) {
+  if (job.status === 'sent') return 'Enviado';
+  if (job.status === 'cancelled') return 'Cancelado';
+  if (job.status === 'failed') return 'Requiere revisión';
+  const seconds = Math.floor((new Date(job.due_at).getTime() - Date.now()) / 1000);
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'Fecha alcanzada';
+  const days = Math.floor(seconds / 86_400); const hours = Math.floor((seconds % 86_400) / 3_600); const minutes = Math.max(1, Math.floor((seconds % 3_600) / 60));
+  if (days) return `${days} d ${hours} h`;
+  if (hours) return `${hours} h ${minutes} min`;
+  return `${minutes} min`;
 }
 
 function CapabilitiesView() {
