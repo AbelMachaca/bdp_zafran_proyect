@@ -77,8 +77,6 @@ Configuración de compilación:
 
 El frontend no necesita una variable con la URL del backend. React solicita `/api` al mismo dominio del frontend y Nginx reenvía internamente esas solicitudes a `http://bdp-cuentas_backend_zafran:3001`. El hostname interno no queda incluido en el JavaScript enviado al navegador.
 
-La ruta pública `/webhooks/woocommerce/` también se reenvía internamente al backend. Esto permite usar el dominio estable del frontend como URL de entrega de WooCommerce sin publicar un dominio adicional para Node.
-
 Una vez desplegado, podés validar PostgreSQL desde la consola del servicio:
 
 ```sh
@@ -92,7 +90,7 @@ Al iniciar con PostgreSQL configurado, el backend aplica migraciones versionadas
 El receptor público es:
 
 ```text
-POST https://panel-zafran.amachaca.tech/webhooks/woocommerce/orders
+POST https://api-zafran.amachaca.tech/webhooks/woocommerce/orders
 ```
 
 En WooCommerce deben crearse dos webhooks con esa misma URL y el mismo secreto:
