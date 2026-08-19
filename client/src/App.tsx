@@ -4,25 +4,32 @@ import {
   CircleDollarSign, ClipboardList, Code2, Database, ExternalLink, Eye, FileJson, Gauge, Globe2,
   Layers3, LockKeyhole, MapPin, Megaphone, Menu, MousePointerClick, PackageSearch, RefreshCw,
   Search, ServerCog, ShoppingBag, ShoppingCart, Smartphone, Tag, TrendingDown, TrendingUp,
-  Truck, UserRound, UsersRound, WalletCards, Workflow, Mail, Clock, ShieldCheck, CheckCircle2, X,
+  Truck, UserRound, UsersRound, WalletCards, Workflow, Mail, Clock, ShieldCheck, CheckCircle2, X, Moon, Sun,
 } from 'lucide-react';
 import { api, money, shortDate } from './api';
-import type { Aggregate, AutomationJob, AutomationJobsResponse, AutomationStatus, AutomationType, CapabilityResponse, Dashboard, Health, Meta, Order } from './types';
+import type { Aggregate, AutomationJob, AutomationJobsResponse, AutomationStatus, AutomationType, CapabilityResponse, Dashboard, EmailMarketingReport, Health, MarketingMonth, Meta, Order } from './types';
 
-type View = 'dashboard' | 'orders' | 'automations' | 'attribution' | 'capabilities' | 'explorer';
+type View = 'dashboard' | 'orders' | 'automations' | 'email' | 'attribution' | 'capabilities' | 'explorer';
 const today = new Date();
 const initialFrom = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
 const initialTo = today.toISOString().slice(0, 10);
 const statusNames: Record<string, string> = { pending: 'Pendiente', processing: 'Procesando', 'on-hold': 'En espera', completed: 'Completado', cancelled: 'Cancelado', refunded: 'Reembolsado', failed: 'Fallido', trash: 'Papelera' };
 const defaultStatuses = ['processing', 'completed', 'refunded'];
+const monthNames = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
 export default function App() {
   const [view, setView] = useState<View>('dashboard');
   const [health, setHealth] = useState<Health | null>(null);
   const [selectedOrder, setSelectedOrder] = useState<number | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const saved = localStorage.getItem('zafran-theme');
+    if (saved === 'light' || saved === 'dark') return saved;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
 
   useEffect(() => { api<Health>('/health').then(setHealth).catch(() => setHealth(null)); }, []);
+  useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('zafran-theme', theme); }, [theme]);
   const navigate = (next: View) => { setView(next); setSelectedOrder(null); setMobileOpen(false); };
   const openOrder = (id: number) => { setSelectedOrder(id); setView('orders'); setMobileOpen(false); };
 
@@ -34,6 +41,7 @@ export default function App() {
           <Nav active={view === 'dashboard'} icon={<Gauge />} onClick={() => navigate('dashboard')}>Resumen</Nav>
           <Nav active={view === 'orders'} icon={<ShoppingCart />} onClick={() => navigate('orders')}>Pedidos</Nav>
           <Nav active={view === 'automations'} icon={<Workflow />} onClick={() => navigate('automations')}>Automatizaciones</Nav>
+          <Nav active={view === 'email'} icon={<Mail />} onClick={() => navigate('email')}>Email marketing</Nav>
           <Nav active={view === 'attribution'} icon={<Megaphone />} onClick={() => navigate('attribution')}>Origen y zonas</Nav>
           <Nav active={view === 'capabilities'} icon={<Layers3 />} onClick={() => navigate('capabilities')}>Todo lo disponible</Nav>
           <Nav active={view === 'explorer'} icon={<Code2 />} onClick={() => navigate('explorer')}>Explorador API</Nav>
@@ -49,6 +57,7 @@ export default function App() {
         <header className="topbar">
           <button className="mobile-menu" onClick={() => setMobileOpen(true)}><Menu /></button>
           <div className="store-pill"><span className="pulse" /> zafran.com.ar <ExternalLink size={13} /></div>
+          <button className="theme-toggle" onClick={() => setTheme((value) => value === 'light' ? 'dark' : 'light')} aria-label={theme === 'light' ? 'Activar modo oscuro' : 'Activar modo claro'} title={theme === 'light' ? 'Activar modo oscuro' : 'Activar modo claro'}>{theme === 'light' ? <Moon /> : <Sun />}<span>{theme === 'light' ? 'Oscuro' : 'Claro'}</span></button>
           <div className="readonly"><Eye size={15} /> Modo lectura</div>
         </header>
         <GlobalLoading />
@@ -56,6 +65,7 @@ export default function App() {
         {view === 'dashboard' && <DashboardView configured={!!health?.configured} />}
         {view === 'orders' && (selectedOrder ? <OrderDetail id={selectedOrder} onBack={() => setSelectedOrder(null)} /> : <OrdersView configured={!!health?.configured} onSelect={openOrder} />)}
         {view === 'automations' && <AutomationsView configured={!!health?.databaseConfigured} onSelectOrder={openOrder} />}
+        {view === 'email' && <EmailMarketingView configured={!!health?.configured} />}
         {view === 'attribution' && <AttributionView configured={!!health?.configured} onSelectOrder={openOrder} />}
         {view === 'capabilities' && <CapabilitiesView />}
         {view === 'explorer' && <ExplorerView configured={!!health?.configured} />}
@@ -213,6 +223,120 @@ function AttributionView({ configured, onSelectOrder }: { configured: boolean; o
   </section>;
 }
 
+function EmailMarketingView({ configured }: { configured: boolean }) {
+  const currentYear = new Date().getFullYear();
+  const [year, setYear] = useState(currentYear);
+  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
+  const [comparison, setComparison] = useState<'none' | 'previousMonth' | 'threeMonthAverage' | 'previousYear'>('none');
+  const [couponYoY, setCouponYoY] = useState(false);
+  const [statuses, setStatuses] = useState(defaultStatuses);
+  const [data, setData] = useState<EmailMarketingReport | null>(null);
+  const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [search, setSearch] = useState('');
+  const load = () => {
+    if (!configured) return;
+    setLoading(true); setError('');
+    api<EmailMarketingReport>(`/email-marketing?year=${year}&statuses=${statuses.join(',')}`)
+      .then(setData).catch((e) => setError(e.message)).finally(() => setLoading(false));
+  };
+  useEffect(load, [configured, year]);
+  const coupons = data?.coupons.filter((coupon) => coupon.code.toLocaleLowerCase('es-AR').includes(search.toLocaleLowerCase('es-AR'))) || [];
+  const month = data?.months[selectedMonth - 1];
+  const baseline = data && month ? marketingBaseline(data, selectedMonth, comparison) : null;
+  const comparisonLabel = comparison === 'previousMonth' ? 'Mes anterior' : comparison === 'threeMonthAverage' ? 'Promedio 3 meses anteriores' : comparison === 'previousYear' ? 'Mismo mes del año pasado' : '';
+  const metricDelta = (current: number, previous?: number) => comparison === 'none' || previous === undefined ? undefined : percentageChange(current, previous);
+  return <section className="page email-page">
+    <PageTitle eyebrow="EMAIL + CUPONES" title="Email marketing" subtitle="Ventas atribuibles a emBlue, impacto de ¡hola20%! y evolución mensual de todos los cupones." />
+    <div className="date-controls email-controls">
+      <label>Año<select value={year} onChange={(e) => { const value = Number(e.target.value); setYear(value); setSelectedMonth(value === currentYear ? new Date().getMonth() + 1 : 12); setComparison('none'); }}>{Array.from({ length: 7 }, (_, index) => currentYear - index).map((value) => <option key={value}>{value}</option>)}</select></label>
+      <label>Mes analizado<select value={selectedMonth} onChange={(e) => { setSelectedMonth(Number(e.target.value)); setComparison('none'); }}>{monthNames.map((name, index) => <option value={index + 1} key={name}>{name}</option>)}</select></label>
+      <button className="primary" onClick={load} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Actualizar reporte</button>
+    </div>
+    <StatusFilter value={statuses} onChange={setStatuses} />
+    {error && <ErrorBox message={error} />}
+    {data && month && <>
+      <div className="email-data-note"><Mail /><div><strong>Lectura de emBlue basada en ventas</strong><span>Identificamos email por la atribución guardada en WooCommerce. Enviados, aperturas, clics y bajas requieren conectar la API de emBlue y no se estiman en este reporte.</span></div><b>{data.period.from} — {data.period.to}</b></div>
+      <div className="marketing-comparison"><div><strong>Comparar {monthNames[selectedMonth - 1]} de {year}</strong><span>La comparación está apagada por defecto. Activala solo cuando la necesites.</span></div><div className="segment-control"><button className={comparison === 'none' ? 'active' : ''} onClick={() => setComparison('none')}>Sin comparar</button><button className={comparison === 'previousMonth' ? 'active' : ''} onClick={() => setComparison('previousMonth')}>Mes anterior</button><button className={comparison === 'threeMonthAverage' ? 'active' : ''} onClick={() => setComparison('threeMonthAverage')}>Promedio 3 meses</button><button className={comparison === 'previousYear' ? 'active' : ''} onClick={() => setComparison('previousYear')}>Año pasado</button></div></div>
+      <div className="metrics-grid email-metrics">
+        <Metric label="Ventas atribuidas a email" value={money(month.emailRevenue)} note={`${share(month.emailRevenue, month.storeRevenue)}% de la venta neta de ${month.label}`} delta={metricDelta(month.emailRevenue, baseline?.emailRevenue)} icon={<CircleDollarSign />} accent="forest" />
+        <Metric label="Pedidos desde email" value={formatNumber(month.emailOrders)} note={`${share(month.emailOrders, month.storeOrders)}% de los pedidos del mes`} delta={metricDelta(month.emailOrders, baseline?.emailOrders)} icon={<Mail />} accent="blue" />
+        <Metric label="Pedidos influenciados" value={formatNumber(month.influencedOrders)} note={`Email atribuido o uso de ${data.primaryCoupon}`} delta={metricDelta(month.influencedOrders, baseline?.influencedOrders)} icon={<Megaphone />} accent="plum" />
+        <Metric label="Adopción de cupones" value={`${share(month.couponOrders, month.storeOrders)}%`} note={`${formatNumber(month.couponOrders)} pedidos usaron al menos un cupón`} delta={metricDelta(month.couponOrders, baseline?.couponOrders)} icon={<Tag />} accent="gold" />
+      </div>
+      <div className="email-highlight">
+        <div className="coupon-seal"><Tag /><span>CUPÓN CLAVE</span></div>
+        <div><span>Código</span><strong>{data.primaryCoupon}</strong><small>Seguimiento prioritario de email marketing</small></div>
+        <EmailStat label="Usos en el mes" value={formatNumber(month.primaryCouponUses)} note={`${share(month.primaryCouponUses, month.storeOrders)}% de pedidos`} previous={baseline ? formatNumber(baseline.primaryCouponUses) : undefined} delta={metricDelta(month.primaryCouponUses, baseline?.primaryCouponUses)} comparisonLabel={comparisonLabel} />
+        <EmailStat label="Venta neta asociada" value={money(month.primaryCouponRevenue)} note={`Durante ${month.label}`} previous={baseline ? money(baseline.primaryCouponRevenue) : undefined} delta={metricDelta(month.primaryCouponRevenue, baseline?.primaryCouponRevenue)} comparisonLabel={comparisonLabel} />
+        <EmailStat label="Descuento otorgado" value={money(month.primaryCouponDiscount)} note={`Durante ${month.label}`} previous={baseline ? money(baseline.primaryCouponDiscount) : undefined} delta={metricDelta(month.primaryCouponDiscount, baseline?.primaryCouponDiscount)} comparisonLabel={comparisonLabel} />
+        <EmailStat label="Clientes" value={formatNumber(month.primaryCouponCustomers)} note="Clientes únicos del mes" previous={baseline ? formatNumber(baseline.primaryCouponCustomers) : undefined} delta={metricDelta(month.primaryCouponCustomers, baseline?.primaryCouponCustomers)} comparisonLabel={comparisonLabel} />
+      </div>
+      <div className="email-grid">
+        <article className="panel wide"><PanelHead title="Pulso mensual" subtitle={`Evolución de ${data.year}; el año anterior solo aparece al elegir esa comparación`} /><MarketingMonthChart months={data.months} showPreviousYear={comparison === 'previousYear'} selectedMonth={selectedMonth} /></article>
+        <article className="panel wide coupon-month-panel"><PanelHead title="Detalle de cada mes" subtitle="Números directos para detectar crecimiento o caída" /><MarketingMonthTable months={data.months} showPreviousYear={comparison === 'previousYear'} /></article>
+        <EmailAttributionDetail data={data} />
+        <article className="panel wide coupon-ranking-panel">
+          <div className="coupon-panel-head"><PanelHead title="Rendimiento anual de todos los cupones" subtitle="Usos, clientes, venta asociada y descuentos" /><div className="coupon-actions"><button className={couponYoY ? 'toggle-comparison active' : 'toggle-comparison'} onClick={() => setCouponYoY((value) => !value)}>Comparar con {year - 1}</button><label className="search-box"><Search /><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar cupón" /></label></div></div>
+          <CouponReportTable coupons={coupons} showPreviousYear={couponYoY} />
+        </article>
+      </div>
+      <details className="methodology"><summary>Cómo se calcula este reporte</summary><p>{data.methodology.emailAttribution}</p><p>{data.methodology.influenced}</p><p>{data.methodology.revenue}</p></details>
+    </>}
+  </section>;
+}
+
+function EmailStat({ label, value, note, previous, delta, comparisonLabel }: { label: string; value: string; note: string; previous?: string; delta?: number | null; comparisonLabel: string }) {
+  return <div className="email-stat"><span>{label}</span><strong>{value}</strong><small>{delta !== undefined ? <DeltaBadge value={delta} /> : note}</small>{delta !== undefined && previous && <em>{comparisonLabel}: {previous}</em>}</div>;
+}
+
+function MarketingMonthChart({ months, showPreviousYear, selectedMonth }: { months: MarketingMonth[]; showPreviousYear: boolean; selectedMonth: number }) {
+  const [metric, setMetric] = useState<'influencedOrders' | 'primaryCouponUses' | 'couponUses'>('influencedOrders');
+  const labels = { influencedOrders: 'Influencia email', primaryCouponUses: '¡hola20%!', couponUses: 'Todos los cupones' };
+  const max = Math.max(1, ...months.flatMap((month) => showPreviousYear ? [month[metric], month.previous[metric]] : [month[metric]]));
+  return <div><div className="segment-control email-segments">{(Object.keys(labels) as Array<keyof typeof labels>).map((key) => <button key={key} className={metric === key ? 'active' : ''} onClick={() => setMetric(key)}>{labels[key]}</button>)}</div><div className="month-chart">{months.map((month) => <div className={`month-column ${month.month === selectedMonth ? 'selected' : ''}`} key={month.month} title={showPreviousYear ? `${month.label}: ${month[metric]} vs ${month.previous[metric]}` : `${month.label}: ${month[metric]}`}><div className="month-values"><b>{month[metric]}</b>{showPreviousYear && <small>{month.previous[metric]}</small>}</div><div className="month-bars"><i className="current" style={{ height: `${month[metric] / max * 100}%` }} />{showPreviousYear && <i className="previous" style={{ height: `${month.previous[metric] / max * 100}%` }} />}</div><span>{month.label}</span></div>)}</div><div className="month-legend"><span><i className="current" /> Año seleccionado</span>{showPreviousYear && <span><i /> Año anterior</span>}</div></div>;
+}
+
+function MarketingMonthTable({ months, showPreviousYear }: { months: MarketingMonth[]; showPreviousYear: boolean }) {
+  return <div className="marketing-month-table"><div className="table-head"><span>Mes</span><span>Email atribuido</span><span>Influencia email</span><span>{'¡hola20%!'}</span><span>Todos los cupones</span><span>Venta influenciada</span></div>{months.map((month) => <div className="marketing-month-row" key={month.month}><strong>{month.label}</strong><MonthCell value={month.emailOrders} delta={showPreviousYear ? month.delta.emailOrders : undefined} /><MonthCell value={month.influencedOrders} delta={showPreviousYear ? month.delta.influencedOrders : undefined} /><MonthCell value={month.primaryCouponUses} delta={showPreviousYear ? month.delta.primaryCouponUses : undefined} /><MonthCell value={month.couponUses} delta={showPreviousYear ? month.delta.couponUses : undefined} /><span className="money-cell">{money(month.influencedRevenue)}</span></div>)}</div>;
+}
+
+function MonthCell({ value, delta }: { value: number; delta?: number | null }) { return <span><b>{formatNumber(value)}</b>{delta !== undefined && <small className={delta === null ? 'neutral' : delta >= 0 ? 'up' : 'down'}>{delta === null ? 'nuevo' : `${delta >= 0 ? '+' : ''}${delta}%`}</small>}</span>; }
+
+function CouponReportTable({ coupons, showPreviousYear }: { coupons: EmailMarketingReport['coupons']; showPreviousYear: boolean }) {
+  if (!coupons.length) return <Empty icon={<Tag />} text="No hay cupones para mostrar" />;
+  return <div className={`coupon-report-table ${showPreviousYear ? '' : 'no-comparison'}`}><div className="table-head"><span>Cupón</span><span>Usos</span>{showPreviousYear && <span>vs. año anterior</span>}<span>Clientes</span><span>Venta neta asociada</span><span>Descuento</span><span>Participación</span></div>{coupons.map((coupon) => <div className={`coupon-report-row ${coupon.key.includes('hola20') ? 'featured' : ''}`} key={coupon.key}><span><strong>{coupon.code}</strong><small>{coupon.firstUsed ? `${coupon.firstUsed} — ${coupon.lastUsed}` : 'Sin usos'}</small></span><b>{formatNumber(coupon.uses)}</b>{showPreviousYear && <DeltaBadge value={coupon.delta.uses} />}<span>{formatNumber(coupon.uniqueCustomers)}</span><strong>{money(coupon.revenue)}</strong><span>{money(coupon.discount)}</span><span>{coupon.usageRate}%</span></div>)}</div>;
+}
+
+function EmailAttributionDetail({ data }: { data: EmailMarketingReport }) {
+  const [dimension, setDimension] = useState<keyof EmailMarketingReport['emailBreakdown']>('campaigns');
+  const labels: Record<keyof EmailMarketingReport['emailBreakdown'], string> = { campaigns: 'Campañas', sources: 'UTM source', mediums: 'UTM medium', sourceMedium: 'Source + medium', landings: 'Landing pages', devices: 'Dispositivos' };
+  const items = data.emailBreakdown[dimension]; const total = data.overview.emailAttributed.orders;
+  return <article className="panel wide email-attribution-panel">
+    <div className="attribution-title"><PanelHead title="Qué aportó más al email" subtitle="Desglose exclusivo de los pedidos identificados como email o emBlue" /><span>{formatNumber(total)} pedidos atribuidos en {data.year}</span></div>
+    <div className="utm-coverage"><Coverage label="Source identificado" value={data.emailCoverage.source} /><Coverage label="Medium identificado" value={data.emailCoverage.medium} /><Coverage label="Con campaña UTM" value={data.emailCoverage.campaign} /><Coverage label="Con landing identificada" value={data.emailCoverage.landing} /></div>
+    <div className="segment-control attribution-segments">{(Object.keys(labels) as Array<keyof typeof labels>).map((key) => <button key={key} className={dimension === key ? 'active' : ''} onClick={() => setDimension(key)}>{labels[key]}</button>)}</div>
+    <div className="email-attribution-table"><div className="table-head"><span>{labels[dimension]}</span><span>Pedidos</span><span>% del email</span><span>Venta neta</span><span>Ticket promedio</span></div>{items.length ? items.map((item) => <div className="email-attribution-row" key={item.name}><span><strong>{item.name}</strong><i><b style={{ width: `${share(item.orders, Math.max(1, total))}%` }} /></i></span><b>{formatNumber(item.orders)}</b><span>{share(item.orders, total)}%</span><strong>{money(item.revenue)}</strong><span>{money(item.averageTicket)}</span></div>) : <Empty icon={<Mail />} text="No hay valores identificados para esta dimensión" />}</div>
+  </article>;
+}
+
+function Coverage({ label, value }: { label: string; value: number }) { return <div><span>{label}</span><strong>{value}%</strong><i><b style={{ width: `${value}%` }} /></i></div>; }
+
+type MarketingSnapshot = Pick<MarketingMonth, 'emailRevenue' | 'emailOrders' | 'influencedOrders' | 'couponOrders' | 'primaryCouponUses' | 'primaryCouponRevenue' | 'primaryCouponDiscount' | 'primaryCouponCustomers'>;
+const marketingKeys: Array<keyof MarketingSnapshot> = ['emailRevenue', 'emailOrders', 'influencedOrders', 'couponOrders', 'primaryCouponUses', 'primaryCouponRevenue', 'primaryCouponDiscount', 'primaryCouponCustomers'];
+function marketingBaseline(data: EmailMarketingReport, month: number, comparison: 'none' | 'previousMonth' | 'threeMonthAverage' | 'previousYear'): MarketingSnapshot | null {
+  if (comparison === 'none') return null;
+  if (comparison === 'previousYear') return data.months[month - 1]?.previous || null;
+  const relative = (offset: number) => {
+    const index = month - 1 + offset;
+    return index >= 0 ? data.months[index] : data.months[12 + index]?.previous;
+  };
+  const periods = comparison === 'previousMonth' ? [relative(-1)] : [relative(-1), relative(-2), relative(-3)];
+  const valid = periods.filter((item): item is NonNullable<typeof item> => Boolean(item));
+  if (!valid.length) return null;
+  return Object.fromEntries(marketingKeys.map((key) => [key, valid.reduce((sum, item) => sum + item[key], 0) / valid.length])) as MarketingSnapshot;
+}
+function share(value: number, total: number) { return total ? Math.round(value / total * 10000) / 100 : 0; }
+function percentageChange(current: number, previous: number) { return previous ? Math.round((current - previous) / previous * 1000) / 10 : current ? null : 0; }
+
 function AutomationsView({ configured, onSelectOrder }: { configured: boolean; onSelectOrder: (id: number) => void }) {
   const [data, setData] = useState<AutomationJobsResponse | null>(null);
   const [page, setPage] = useState(1); const [status, setStatus] = useState<AutomationStatus | ''>('');
@@ -363,6 +487,7 @@ function RankingTable({ items, onSelect }: { items: Aggregate[]; onSelect: (item
   return <div className="ranking-table"><div className="ranking-table-head"><span>Nombre</span><span>Pedidos</span><span>Venta neta</span><span>Ticket</span><span /></div>{items.map((item) => <button key={item.name} onClick={() => onSelect(item)}><span>{item.name}</span><strong>{item.orders}</strong><span>{money(item.revenue)}</span><span>{money(item.averageTicket)}</span><ChevronRight /></button>)}</div>;
 }
 function compactMoney(value: number) { return new Intl.NumberFormat('es-AR', { notation: 'compact', maximumFractionDigits: 1 }).format(value); }
+function formatNumber(value: number) { return new Intl.NumberFormat('es-AR').format(Math.round(value)); }
 function shiftDate(value: string, amount: number, unit: 'month' | 'year') { const date = new Date(`${value}T12:00:00Z`); const day = date.getUTCDate(); if (unit === 'year') date.setUTCFullYear(date.getUTCFullYear() + amount); else { date.setUTCDate(1); date.setUTCMonth(date.getUTCMonth() + amount); const maxDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0, 12)).getUTCDate(); date.setUTCDate(Math.min(day, maxDay)); } return date.toISOString().slice(0, 10); }
 function Info({ label, value, sensitive }: { label: string; value?: string; sensitive?: boolean }) { return <div className="info"><span>{label}{sensitive && <LockKeyhole />}</span><strong>{value || '—'}</strong></div>; }
 function Status({ value }: { value: string }) { return <span className={`status status-${value}`}>{statusNames[value] || value}</span>; }

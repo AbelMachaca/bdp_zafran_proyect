@@ -2,6 +2,8 @@
 
 Panel local de solo lectura para consultar pedidos, productos, clientes, cupones, reembolsos, reportes y metadatos de WooCommerce.
 
+La interfaz incluye modos claro y oscuro. La primera visita respeta la preferencia del sistema y luego conserva la selección realizada desde la barra superior.
+
 ## Configuración
 
 1. Copiá `.env.example` como `server/.env`.
@@ -82,6 +84,20 @@ Una vez desplegado, podés validar PostgreSQL desde la consola del servicio:
 ```sh
 npm run db:test:prod -w server
 ```
+
+## Reporte de email marketing y cupones
+
+La sección **Email marketing** analiza un año completo y permite elegir el mes operativo. La comparación comienza apagada y puede activarse contra el mes anterior, el promedio de los tres meses anteriores o el mismo mes del año pasado. Incluye ventas y pedidos atribuidos a email/emBlue mediante los metadatos nativos de atribución de WooCommerce, pedidos influenciados por email, adopción mensual de cupones y un seguimiento destacado del cupón `¡hola20%!`.
+
+El desglose de atribución muestra qué campañas, fuentes UTM, medios UTM, combinaciones source/medium, landing pages y dispositivos aportaron más pedidos y venta neta al canal email. También informa la cobertura de etiquetado para detectar campañas incompletas.
+
+El ranking de cupones informa usos, clientes únicos, venta neta asociada, descuento otorgado, participación sobre los pedidos y variación interanual. Los estados contabilizados son configurables desde el panel.
+
+```text
+GET /api/email-marketing?year=2026&statuses=processing,completed,refunded
+```
+
+El reporte no estima envíos, aperturas, clics ni bajas: esas métricas requieren una futura conexión con la API de emBlue.
 
 ## Automatizaciones WooCommerce
 

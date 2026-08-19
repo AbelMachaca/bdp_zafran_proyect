@@ -2,13 +2,14 @@ type Meta = { key?: string; value?: unknown };
 type LineItem = { name?: string; product_id?: number; quantity?: number; subtotal?: string; subtotal_tax?: string; total?: string; total_tax?: string };
 type Refund = { total?: string };
 type Fee = { total?: string; total_tax?: string };
+type CouponLine = { code?: string; discount?: string; discount_tax?: string };
 type Address = { city?: string; state?: string; country?: string; postcode?: string };
 export type AnalyticsOrder = {
   id: number; number?: string; status?: string; total?: string; discount_total?: string; discount_tax?: string;
   shipping_total?: string; shipping_tax?: string; total_tax?: string; date_created?: string; payment_method_title?: string;
   date_paid?: string | null;
   customer_id?: number; billing?: Address & { email?: string }; shipping?: Address; line_items?: LineItem[];
-  fee_lines?: Fee[]; refunds?: Refund[]; meta_data?: Meta[];
+  fee_lines?: Fee[]; refunds?: Refund[]; coupon_lines?: CouponLine[]; meta_data?: Meta[];
 };
 
 export const defaultReportStatuses = ['processing', 'completed', 'refunded'];
@@ -149,6 +150,145 @@ export function orderDimensions(order: AnalyticsOrder) {
     province, city: `${cityName} · ${province}`, postcode: address?.postcode || '',
   };
 }
+
+export function summarizeEmailMarketing(
+  currentOrders: AnalyticsOrder[], previousOrders: AnalyticsOrder[], year: number,
+  selectedStatuses = defaultReportStatuses, primaryCoupon = '¡hola20%!', previousFullYearOrders = previousOrders,
+) {
+  const statuses = new Set(selectedStatuses);
+  const current = currentOrders.filter((order) => statuses.has(order.status || ''));
+  const previous = previousOrders.filter((order) => statuses.has(order.status || ''));
+  const previousFullYear = previousFullYearOrders.filter((order) => statuses.has(order.status || ''));
+  const primaryKey = normalizeCoupon(primaryCoupon);
+  const currentSummary = summarizeMarketingPeriod(current, year, primaryKey);
+  const previousSummary = summarizeMarketingPeriod(previous, year - 1, primaryKey);
+  const previousMonthlySummary = summarizeMarketingPeriod(previousFullYear, year - 1, primaryKey);
+  const previousCoupons = new Map(previousSummary.coupons.map((coupon) => [coupon.key, coupon]));
+
+  return {
+    year,
+    primaryCoupon,
+    overview: {
+      storeOrders: currentSummary.storeOrders,
+      storeRevenue: currentSummary.storeRevenue,
+      couponOrders: currentSummary.couponOrders,
+      couponUsageRate: percent(currentSummary.couponOrders, currentSummary.storeOrders),
+      emailAttributed: compareMetric(currentSummary.emailAttributed, previousSummary.emailAttributed, currentSummary),
+      emailInfluenced: compareMetric(currentSummary.emailInfluenced, previousSummary.emailInfluenced, currentSummary),
+    },
+    primary: compareCoupon(currentSummary.primary, previousSummary.primary, currentSummary.storeOrders),
+    emailBreakdown: currentSummary.emailBreakdown,
+    emailCoverage: currentSummary.emailCoverage,
+    months: currentSummary.months.map((month, index) => {
+      const previousMonth = previousMonthlySummary.months[index]!;
+      return ({
+      ...month,
+      previous: previousMonth,
+      delta: {
+        emailOrders: percentageDeltaValue(month.emailOrders, previousMonth.emailOrders),
+        influencedOrders: percentageDeltaValue(month.influencedOrders, previousMonth.influencedOrders),
+        couponUses: percentageDeltaValue(month.couponUses, previousMonth.couponUses),
+        primaryCouponUses: percentageDeltaValue(month.primaryCouponUses, previousMonth.primaryCouponUses),
+      },
+    }); }),
+    coupons: currentSummary.coupons.map((coupon) =>
+      compareCoupon(coupon, previousCoupons.get(coupon.key) || emptyCoupon(coupon.code), currentSummary.storeOrders),
+    ),
+    methodology: {
+      emailAttribution: 'Origen, medio, tipo o campaña del pedido contiene emBlue, email, e-mail o newsletter.',
+      influenced: `Pedido atribuido a email o que utilizó ${primaryCoupon}; cada pedido se cuenta una sola vez.`,
+      revenue: 'Venta del pedido descontando reembolsos, impuestos y envío.',
+    },
+  };
+}
+
+function summarizeMarketingPeriod(orders: AnalyticsOrder[], year: number, primaryKey: string) {
+  const months = Array.from({ length: 12 }, (_, month) => ({
+    month: month + 1, label: new Intl.DateTimeFormat('es-AR', { month: 'short', timeZone: 'UTC' }).format(new Date(Date.UTC(year, month, 1))),
+    storeOrders: 0, storeRevenue: 0, emailOrders: 0, emailRevenue: 0, influencedOrders: 0, influencedRevenue: 0,
+    couponOrders: 0, couponUses: 0, couponDiscount: 0, primaryCouponUses: 0, primaryCouponRevenue: 0, primaryCouponDiscount: 0,
+  }));
+  const monthlyPrimaryCustomers = Array.from({ length: 12 }, () => new Set<string>());
+  const coupons = new Map<string, ReturnType<typeof emptyCoupon> & { customers: Set<string> }>();
+  const emailSources = new Map<string, Aggregate>(); const emailMediums = new Map<string, Aggregate>();
+  const emailCampaigns = new Map<string, Aggregate>(); const emailLandings = new Map<string, Aggregate>();
+  const emailDevices = new Map<string, Aggregate>(); const emailSourceMedium = new Map<string, Aggregate>();
+  const emailCoverage = { source: 0, medium: 0, campaign: 0, landing: 0 };
+  let storeRevenue = 0; let couponOrders = 0;
+  const emailAttributed = { orders: 0, revenue: 0 };
+  const emailInfluenced = { orders: 0, revenue: 0 };
+  const primary = { ...emptyCoupon('¡hola20%!'), customers: new Set<string>() };
+
+  for (const order of orders) {
+    const monthIndex = Math.max(0, Math.min(11, Number(order.date_created?.slice(5, 7) || 1) - 1));
+    const month = months[monthIndex]!;
+    const revenue = orderRevenue(order);
+    const lines = uniqueCouponLines(order.coupon_lines || []);
+    const dimensions = orderDimensions(order);
+    const attributed = isEmailDimensions(dimensions);
+    const hasPrimary = lines.some((line) => normalizeCoupon(line.code || '') === primaryKey);
+    const influenced = attributed || hasPrimary;
+    const customer = String(order.customer_id || order.billing?.email?.trim().toLowerCase() || `order:${order.id}`);
+    storeRevenue += revenue; month.storeOrders++; month.storeRevenue += revenue;
+    if (attributed) {
+      emailAttributed.orders++; emailAttributed.revenue += revenue; month.emailOrders++; month.emailRevenue += revenue;
+      addAggregate(emailSources, dimensions.source, revenue); addAggregate(emailMediums, dimensions.medium, revenue);
+      addAggregate(emailDevices, dimensions.device, revenue); addAggregate(emailSourceMedium, `${dimensions.source} · ${dimensions.medium}`, revenue);
+      if (dimensions.campaign !== 'Sin campaña') addAggregate(emailCampaigns, dimensions.campaign, revenue);
+      if (dimensions.landing !== 'Sin landing') addAggregate(emailLandings, dimensions.landing, revenue);
+      if (dimensions.sourceRaw !== 'unknown') emailCoverage.source++;
+      if (dimensions.medium !== 'Sin medio') emailCoverage.medium++;
+      if (dimensions.campaign !== 'Sin campaña') emailCoverage.campaign++;
+      if (dimensions.landing !== 'Sin landing') emailCoverage.landing++;
+    }
+    if (influenced) { emailInfluenced.orders++; emailInfluenced.revenue += revenue; month.influencedOrders++; month.influencedRevenue += revenue; }
+    if (lines.length) { couponOrders++; month.couponOrders++; }
+    for (const line of lines) {
+      const code = line.code?.trim() || 'Sin código'; const key = normalizeCoupon(code);
+      const item = coupons.get(key) || { ...emptyCoupon(code), key, customers: new Set<string>() };
+      const discount = num(line.discount) + num(line.discount_tax);
+      item.uses++; item.revenue += revenue; item.discount += discount; item.customers.add(customer);
+      item.firstUsed = earlier(item.firstUsed, order.date_created); item.lastUsed = later(item.lastUsed, order.date_created);
+      coupons.set(key, item);
+      month.couponUses++; month.couponDiscount += discount;
+      if (key === primaryKey) {
+        primary.uses++; primary.revenue += revenue; primary.discount += discount; primary.customers.add(customer);
+        primary.firstUsed = earlier(primary.firstUsed, order.date_created); primary.lastUsed = later(primary.lastUsed, order.date_created);
+        month.primaryCouponUses++; month.primaryCouponRevenue += revenue; month.primaryCouponDiscount += discount;
+        monthlyPrimaryCustomers[monthIndex]!.add(customer);
+      }
+    }
+  }
+  const finalize = (item: ReturnType<typeof emptyCoupon> & { customers: Set<string> }) => ({
+    ...item, revenue: round(item.revenue), discount: round(item.discount), uniqueCustomers: item.customers.size,
+    customers: undefined,
+  });
+  return {
+    storeOrders: orders.length, storeRevenue: round(storeRevenue), couponOrders,
+    emailAttributed: roundedMetric(emailAttributed), emailInfluenced: roundedMetric(emailInfluenced),
+    primary: finalize(primary),
+    months: months.map((month, index) => ({ ...month, storeRevenue: round(month.storeRevenue), emailRevenue: round(month.emailRevenue), influencedRevenue: round(month.influencedRevenue), couponDiscount: round(month.couponDiscount), primaryCouponRevenue: round(month.primaryCouponRevenue), primaryCouponDiscount: round(month.primaryCouponDiscount), primaryCouponCustomers: monthlyPrimaryCustomers[index]!.size })),
+    coupons: [...coupons.values()].map(finalize).sort((a, b) => b.uses - a.uses || b.revenue - a.revenue),
+    emailBreakdown: {
+      sources: aggregateList(emailSources), mediums: aggregateList(emailMediums), campaigns: aggregateList(emailCampaigns, 30),
+      landings: aggregateList(emailLandings, 30), devices: aggregateList(emailDevices), sourceMedium: aggregateList(emailSourceMedium, 30),
+    },
+    emailCoverage: Object.fromEntries(Object.entries(emailCoverage).map(([key, value]) => [key, percent(value, emailAttributed.orders)])),
+  };
+}
+
+function emptyCoupon(code: string) { return { key: normalizeCoupon(code), code, uses: 0, revenue: 0, discount: 0, uniqueCustomers: 0, firstUsed: null as string | null, lastUsed: null as string | null }; }
+function normalizeCoupon(value: string) { return value.trim().toLocaleLowerCase('es-AR').normalize('NFKC'); }
+function uniqueCouponLines(lines: CouponLine[]) { const seen = new Set<string>(); return lines.filter((line) => { const key = normalizeCoupon(line.code || ''); if (!key || seen.has(key)) return false; seen.add(key); return true; }); }
+function orderRevenue(order: AnalyticsOrder) { const refund = (order.refunds || []).reduce((sum, item) => sum + Math.abs(num(item.total)), 0); return order.status === 'refunded' ? 0 : round(num(order.total) - refund - num(order.total_tax) - num(order.shipping_total)); }
+function isEmailDimensions(dimensions: ReturnType<typeof orderDimensions>) { return dimensions.channel === 'Email' || /emblue|email|e-mail|newsletter/i.test(`${dimensions.sourceRaw} ${dimensions.medium} ${dimensions.campaign}`); }
+function roundedMetric(metric: { orders: number; revenue: number }) { return { ...metric, revenue: round(metric.revenue), averageTicket: metric.orders ? round(metric.revenue / metric.orders) : 0 }; }
+function percent(value: number, total: number) { return total ? round(value / total * 100) : 0; }
+function percentageDeltaValue(current: number, previous: number) { return previous ? round((current - previous) / previous * 100) : current ? null : 0; }
+function compareMetric(current: { orders: number; revenue: number; averageTicket: number }, previous: { orders: number; revenue: number; averageTicket: number }, totals: { storeOrders: number; storeRevenue: number }) { return { ...current, orderShare: percent(current.orders, totals.storeOrders), revenueShare: percent(current.revenue, totals.storeRevenue), previous, delta: { orders: percentageDeltaValue(current.orders, previous.orders), revenue: percentageDeltaValue(current.revenue, previous.revenue), averageTicket: percentageDeltaValue(current.averageTicket, previous.averageTicket) } }; }
+function compareCoupon(current: ReturnType<typeof emptyCoupon> & { uniqueCustomers?: number }, previous: ReturnType<typeof emptyCoupon> & { uniqueCustomers?: number }, storeOrders: number) { return { ...current, usageRate: percent(current.uses, storeOrders), previous: { uses: previous.uses, revenue: previous.revenue, discount: previous.discount }, delta: { uses: percentageDeltaValue(current.uses, previous.uses), revenue: percentageDeltaValue(current.revenue, previous.revenue), discount: percentageDeltaValue(current.discount, previous.discount) } }; }
+function earlier(current: string | null, value?: string) { const date = value?.slice(0, 10) || null; return !current || (date && date < current) ? date : current; }
+function later(current: string | null, value?: string) { const date = value?.slice(0, 10) || null; return !current || (date && date > current) ? date : current; }
 
 type Aggregate = { name: string; orders: number; revenue: number };
 function addAggregate(map: Map<string, Aggregate>, name: string, revenue: number) {

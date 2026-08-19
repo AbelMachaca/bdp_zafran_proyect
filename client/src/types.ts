@@ -77,3 +77,32 @@ export type CapabilityResponse = {
   capabilities: Array<{ id: string; group: string; title: string; description: string; path: string; sensitive?: boolean; routeDetected: boolean; access: { status: string; detail?: string } | null }>;
   extensions: Array<{ id: string; title: string; namespace: string; description: string; detected: boolean }>;
 };
+export type MarketingMetric = {
+  orders: number; revenue: number; averageTicket: number; orderShare: number; revenueShare: number;
+  previous: { orders: number; revenue: number; averageTicket: number };
+  delta: { orders: number | null; revenue: number | null; averageTicket: number | null };
+};
+export type CouponMetric = {
+  key: string; code: string; uses: number; revenue: number; discount: number; uniqueCustomers: number;
+  firstUsed: string | null; lastUsed: string | null; usageRate: number;
+  previous: { uses: number; revenue: number; discount: number };
+  delta: { uses: number | null; revenue: number | null; discount: number | null };
+};
+export type MarketingMonth = {
+  month: number; label: string; storeOrders: number; storeRevenue: number; emailOrders: number; emailRevenue: number;
+  influencedOrders: number; influencedRevenue: number; couponOrders: number; couponUses: number; couponDiscount: number;
+  primaryCouponUses: number; primaryCouponRevenue: number; primaryCouponDiscount: number; primaryCouponCustomers: number;
+  previous: Omit<MarketingMonth, 'previous' | 'delta'>;
+  delta: { emailOrders: number | null; influencedOrders: number | null; couponUses: number | null; primaryCouponUses: number | null };
+};
+export type EmailMarketingReport = {
+  year: number; primaryCoupon: string; period: Period; comparisonPeriod: Period; generatedAt: string;
+  overview: {
+    storeOrders: number; storeRevenue: number; couponOrders: number; couponUsageRate: number;
+    emailAttributed: MarketingMetric; emailInfluenced: MarketingMetric;
+  };
+  primary: CouponMetric; months: MarketingMonth[]; coupons: CouponMetric[];
+  emailBreakdown: { sources: Aggregate[]; mediums: Aggregate[]; campaigns: Aggregate[]; landings: Aggregate[]; devices: Aggregate[]; sourceMedium: Aggregate[] };
+  emailCoverage: { source: number; medium: number; campaign: number; landing: number };
+  methodology: { emailAttribution: string; influenced: string; revenue: string };
+};

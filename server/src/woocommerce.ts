@@ -36,10 +36,15 @@ export async function getAll<T>(path: string, params: Record<string, unknown> = 
   const first = await wooGet<T[]>(path, { ...params, per_page: 100, page: 1 });
   const pageCount = Math.min(first.totalPages || 1, maxPages);
   if (pageCount <= 1) return first.data;
-  const remaining = await Promise.all(
-    Array.from({ length: pageCount - 1 }, (_, index) => wooGet<T[]>(path, { ...params, per_page: 100, page: index + 2 })),
-  );
-  return [first.data, ...remaining.map((page) => page.data)].flat();
+  const remaining: T[][] = [];
+  const pages = Array.from({ length: pageCount - 1 }, (_, index) => index + 2);
+  for (let index = 0; index < pages.length; index += 5) {
+    const batch = await Promise.all(pages.slice(index, index + 5).map((page) =>
+      wooGet<T[]>(path, { ...params, per_page: 100, page }),
+    ));
+    remaining.push(...batch.map((response) => response.data));
+  }
+  return [first.data, ...remaining].flat();
 }
 
 export async function publicApiIndex() {

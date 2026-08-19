@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { config, credentialsConfigured } from './config.js';
 import { WooError, getAll, publicApiIndex, wooGet } from './woocommerce.js';
 import { capabilities, explorerResources } from './capabilities.js';
-import { orderDimensions, summarizeOrders, type AnalyticsOrder } from './analytics.js';
+import { orderDimensions, summarizeEmailMarketing, summarizeOrders, type AnalyticsOrder } from './analytics.js';
 import { databaseConfigured } from './database.js';
 import { runMigrations } from './migrations.js';
 import { automationJobsHandler, automationStatusHandler, startAutomationWorker } from './automations.js';
@@ -147,6 +147,32 @@ app.get('/api/attribution/orders', async (req, res, next) => {
       };
     });
     res.json({ total: data.length, data: data.slice(0, 250) });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/email-marketing', async (req, res, next) => {
+  try {
+    const currentYear = Number(new Intl.DateTimeFormat('en', { year: 'numeric', timeZone: 'America/Argentina/Buenos_Aires' }).format(new Date()));
+    const query = z.object({
+      year: z.coerce.number().int().min(2015).max(currentYear).default(currentYear),
+      statuses: z.string().optional(),
+    }).parse(req.query);
+    const todayParts = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'America/Argentina/Buenos_Aires' }).formatToParts(new Date());
+    const today = Object.fromEntries(todayParts.map((part) => [part.type, part.value]));
+    const currentTo = query.year === currentYear ? `${today.year}-${today.month}-${today.day}` : `${query.year}-12-31`;
+    const previousYear = query.year - 1;
+    const previousTo = query.year === currentYear ? `${previousYear}-${today.month}-${today.day}` : `${previousYear}-12-31`;
+    const [orders, previousFullYearOrders] = await Promise.all([
+      loadOrdersPeriod({ from: `${query.year}-01-01`, to: currentTo }),
+      loadOrdersPeriod({ from: `${previousYear}-01-01`, to: `${previousYear}-12-31` }),
+    ]);
+    const previousOrders = (previousFullYearOrders as AnalyticsOrder[]).filter((order) => (order.date_created?.slice(0, 10) || '') <= previousTo);
+    res.json({
+      ...summarizeEmailMarketing(orders as AnalyticsOrder[], previousOrders, query.year, parseStatuses(query.statuses), '¡hola20%!', previousFullYearOrders as AnalyticsOrder[]),
+      period: { from: `${query.year}-01-01`, to: currentTo },
+      comparisonPeriod: { from: `${previousYear}-01-01`, to: previousTo },
+      generatedAt: new Date().toISOString(),
+    });
   } catch (error) { next(error); }
 });
 
