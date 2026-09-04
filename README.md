@@ -67,6 +67,10 @@ EMBLUE_ENABLED=false
 EMBLUE_POST_PURCHASE_ENABLED=false
 EMBLUE_POST_PURCHASE_URL=
 EMBLUE_POST_PURCHASE_TOKEN=
+EMBLUE_POST_PURCHASE_ACTIVE_FROM=
+EMBLUE_TIMEOUT_MS=12000
+EMBLUE_MAX_ATTEMPTS=5
+AUTOMATION_TEST_SECRET=generar_otra_clave_larga_y_aleatoria
 ```
 
 No copies `server/.env` al contenedor. Cargá los valores reales desde las variables de entorno de Easypanel. Para PostgreSQL usá la URL interna del servicio cuando ambos estén en el mismo proyecto.
@@ -119,7 +123,9 @@ En WooCommerce deben crearse dos webhooks con esa misma URL y el mismo secreto:
 
 No actives los webhooks antes de desplegar el receptor. WooCommerce y Easypanel deben compartir exactamente el valor de `WC_WEBHOOK_SECRET`.
 
-`AUTOMATIONS_ACTIVE_FROM` define el inicio de la automatización y evita generar trabajos retroactivos. Usá una fecha ISO 8601 con zona horaria argentina. Mientras `EMBLUE_ENABLED=false`, los trabajos vencidos pasan a `ready` y no se envía información a emBlue.
+`AUTOMATIONS_ACTIVE_FROM` define desde cuándo se crean automatizaciones y evita generar trabajos retroactivos. Usá una fecha ISO 8601 con zona horaria argentina. Mientras `EMBLUE_ENABLED=false`, no se envía información a emBlue.
+
+Los trabajos de Postcompra cuya fecha ya pasó al instalar esta versión se conservan con estado `expired` (**Vencido · no enviado**): siguen disponibles para auditoría en el frontend y el worker nunca los reclama. Además, `EMBLUE_POST_PURCHASE_ACTIVE_FROM` funciona como corte de seguridad al activar el conector; todo trabajo con fecha prevista anterior a ese instante también queda vencido. Definí esta variable con la fecha y hora real de activación, por ejemplo `2026-09-04T18:30:00-03:00`.
 
 Comprobaciones disponibles:
 
@@ -139,13 +145,30 @@ Cada trabajo conserva las categorías originales de WooCommerce únicamente como
 
 El envío de Postcompra utiliza el conector personalizado de Data Lab indicado por `EMBLUE_POST_PURCHASE_URL`. Con la opción **Sin autenticación adicional**, `EMBLUE_POST_PURCHASE_TOKEN` debe quedar vacío. Si luego se selecciona seguridad con API Token, esa variable contiene únicamente el token y el backend agrega `Authorization: Bearer ...`.
 
-Hay dos seguros independientes y ambos deben estar activos para enviar:
+Hay tres seguros independientes y todos deben estar configurados para enviar trabajos reales:
 
 ```text
 EMBLUE_ENABLED=true
 EMBLUE_POST_PURCHASE_ENABLED=true
+EMBLUE_POST_PURCHASE_ACTIVE_FROM=2026-09-04T18:30:00-03:00
 ```
 
 Primero se configura y prueba el mapeo manteniendo ambas variables en `false`. No se deben activar hasta que la URL completa y el Journey estén revisados. El JSON lleva los datos simples del contacto y pedido en el nivel superior —incluido `email`, que Data Lab exige— y `products` como arreglo de objetos para utilizarlo como campo dinámico en el Journey.
 
 Cada trabajo se toma de forma exclusiva para evitar envíos simultáneos duplicados. Las respuestas se registran en `automation_attempts`; los fallos se reintentan hasta `EMBLUE_MAX_ATTEMPTS` con esperas progresivas. Cross-sell y Win-back permanecen en modo prueba hasta disponer de sus propios conectores.
+
+### Prueba manual de Postcompra
+
+La sección **Automatizaciones** incluye el botón **Probar Postcompra**. Abre un formulario editable para simular el contacto, pedido, producto y segmento; muestra una vista previa y envía el mismo contrato JSON que utilizará el worker. La prueba es inmediata e independiente: no crea ni consume trabajos de la cola y funciona aunque `EMBLUE_ENABLED` y `EMBLUE_POST_PURCHASE_ENABLED` permanezcan en `false`.
+
+Para proteger el endpoint público, generá una clave distinta del secreto de WooCommerce y guardala únicamente en las variables del backend de Easypanel:
+
+```text
+AUTOMATION_TEST_SECRET=una_clave_larga_y_aleatoria
+```
+
+El panel solicita esa clave al abrir la prueba y la envía en el header `X-Automation-Test-Secret`; no queda incluida en el JavaScript compilado. Hay un límite de cinco pruebas por minuto y cada resultado queda auditado en `automation_test_deliveries`. El endpoint utilizado es:
+
+```text
+POST /api/automations/test/post-purchase
+```

@@ -3,7 +3,7 @@ export type Health = {
   storeUrl: string; mode: string;
 };
 export type AutomationType = 'post_purchase' | 'cross_sell' | 'win_back';
-export type AutomationStatus = 'scheduled' | 'ready' | 'processing' | 'sent' | 'cancelled' | 'skipped' | 'failed';
+export type AutomationStatus = 'scheduled' | 'ready' | 'processing' | 'sent' | 'cancelled' | 'skipped' | 'failed' | 'expired';
 export type AutomationProduct = {
   product_id?: number; variation_id?: number; name: string; sku?: string; quantity: number; total?: string;
   categories?: Array<{ id?: number; name: string }>;
@@ -11,7 +11,7 @@ export type AutomationProduct = {
 export type AutomationJob = {
   id: string; automation_type: AutomationType; trigger_order_id: string; due_at: string; next_attempt_at?: string | null; status: AutomationStatus;
   attempts: number; last_error?: string | null; created_at: string; updated_at: string; sent_at?: string | null;
-  cancelled_at?: string | null; remaining_seconds: number | string; email: string; first_name?: string; last_name?: string;
+  cancelled_at?: string | null; expired_at?: string | null; remaining_seconds: number | string; email: string; first_name?: string; last_name?: string;
   phone?: string; current_marketing_opt_in: boolean; current_consent_source?: string; current_marketing_opt_in_at?: string;
   order_number?: string; order_status?: string; currency?: string;
   total?: string; date_created?: string; processing_at?: string; order_marketing_opt_in: boolean; consent_source?: string;
@@ -29,13 +29,14 @@ export type AutomationJob = {
 };
 export type AutomationJobsResponse = {
   summary: {
-    total: number; scheduled: number; ready: number; sent: number; cancelled: number; problems: number;
+    total: number; scheduled: number; ready: number; sent: number; cancelled: number; expired: number; problems: number;
     post_purchase: number; cross_sell: number; win_back: number;
   };
   data: AutomationJob[]; total: number; page: number; perPage: number;
   mode: {
     enabled: boolean; emblueEnabled: boolean;
     connectors?: { postPurchase: boolean; crossSell: boolean; winBack: boolean };
+    testDeliveryConfigured?: boolean; postPurchaseActiveFrom?: string | null;
   };
 };
 export type Dashboard = {

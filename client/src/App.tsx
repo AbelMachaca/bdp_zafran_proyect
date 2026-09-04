@@ -4,7 +4,7 @@ import {
   CircleDollarSign, ClipboardList, Code2, Database, ExternalLink, Eye, FileJson, Gauge, Globe2,
   Layers3, LockKeyhole, MapPin, Megaphone, Menu, MousePointerClick, PackageSearch, RefreshCw,
   Search, ServerCog, ShoppingBag, ShoppingCart, Smartphone, Tag, TrendingDown, TrendingUp,
-  Truck, UserRound, UsersRound, WalletCards, Workflow, Mail, Clock, ShieldCheck, CheckCircle2, X, Moon, Sun,
+  Truck, UserRound, UsersRound, WalletCards, Workflow, Mail, Clock, ShieldCheck, CheckCircle2, X, Moon, Sun, Send,
 } from 'lucide-react';
 import { api, money, shortDate } from './api';
 import type { Aggregate, AutomationJob, AutomationJobsResponse, AutomationStatus, AutomationType, CapabilityResponse, Dashboard, EmailMarketingReport, Health, MarketingMonth, Meta, Order } from './types';
@@ -342,7 +342,7 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
   const [page, setPage] = useState(1); const [status, setStatus] = useState<AutomationStatus | ''>('');
   const [type, setType] = useState<AutomationType | ''>(''); const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null); const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(''); const [, setClock] = useState(Date.now());
+  const [error, setError] = useState(''); const [showPostPurchaseTest, setShowPostPurchaseTest] = useState(false); const [, setClock] = useState(Date.now());
   const load = () => {
     if (!configured) return;
     setLoading(true); setError('');
@@ -363,19 +363,21 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
     <PageTitle eyebrow="CICLO DE CLIENTES" title="Automatizaciones" subtitle="Seguimiento completo desde la compra procesada hasta el envío a emBlue." />
     {!configured && <ErrorBox message="La base de datos de automatizaciones todavía no está configurada." />}
     {data && <div className={`automation-mode ${anyDeliveryConnected ? 'live' : 'test'}`}>
-      <div>{anyDeliveryConnected ? <CheckCircle2 /> : <AlertCircle />}<span><strong>{postPurchaseConnected ? 'Postcompra conectado a emBlue Data Lab' : data.mode.emblueEnabled ? 'emBlue habilitado; Postcompra todavía inactivo' : 'Modo prueba: emBlue desactivado'}</strong><small>{postPurchaseConnected ? 'Los trabajos de Postcompra vencidos se envían automáticamente y quedan auditados.' : 'Los eventos se reciben y programan, pero Postcompra todavía no sale hacia emBlue.'}</small></span></div>
+      <div>{anyDeliveryConnected ? <CheckCircle2 /> : <AlertCircle />}<span><strong>{postPurchaseConnected ? 'Postcompra conectado a emBlue Data Lab' : data.mode.emblueEnabled ? 'emBlue habilitado; Postcompra todavía inactivo' : 'Modo prueba: emBlue desactivado'}</strong><small>{postPurchaseConnected ? 'Solo se envían trabajos posteriores a la fecha de activación; los vencidos quedan protegidos.' : 'Los eventos se reciben y programan, pero Postcompra todavía no sale hacia emBlue.'}</small></span></div>
       <span>{data.mode.enabled ? 'Programación activa' : 'Programación inactiva'}</span>
     </div>}
     <div className="metrics-grid automation-metrics">
       <Metric label="Programados" value={summary?.scheduled ?? '—'} note="Esperando su fecha prevista" icon={<Clock />} accent="forest" />
       <Metric label="Listos" value={summary?.ready ?? '—'} note="Fecha alcanzada; pendientes de emBlue" icon={<Mail />} accent="amber" />
       <Metric label="Enviados" value={summary?.sent ?? '—'} note="Entrega registrada correctamente" icon={<CheckCircle2 />} accent="blue" />
+      <Metric label="Vencidos sin enviar" value={summary?.expired ?? '—'} note="Históricos protegidos; nunca se enviarán" icon={<Clock />} accent="amber" />
       <Metric label="Cancelados o con problema" value={summary ? summary.cancelled + summary.problems : '—'} note="Cancelados, omitidos o fallidos" icon={<AlertCircle />} accent="plum" />
     </div>
     <div className="order-toolbar automation-toolbar">
       <div className="search-box"><Search /><input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && refreshFromFirstPage()} placeholder="Correo, cliente o pedido…" /></div>
       <div className="select-wrap"><select value={type} onChange={(e) => { setType(e.target.value as AutomationType | ''); setPage(1); }}><option value="">Todas las automatizaciones</option><option value="post_purchase">Postcompra</option><option value="cross_sell">Cross-sell</option><option value="win_back">Win-back</option></select><ChevronDown /></div>
-      <div className="select-wrap"><select value={status} onChange={(e) => { setStatus(e.target.value as AutomationStatus | ''); setPage(1); }}><option value="">Todos los estados</option><option value="scheduled">Programado</option><option value="ready">Listo</option><option value="processing">Enviando</option><option value="sent">Enviado</option><option value="cancelled">Cancelado</option><option value="skipped">Omitido</option><option value="failed">Fallido</option></select><ChevronDown /></div>
+      <div className="select-wrap"><select value={status} onChange={(e) => { setStatus(e.target.value as AutomationStatus | ''); setPage(1); }}><option value="">Todos los estados</option><option value="scheduled">Programado</option><option value="ready">Listo</option><option value="processing">Enviando</option><option value="sent">Enviado</option><option value="expired">Vencido · no enviado</option><option value="cancelled">Cancelado</option><option value="skipped">Omitido</option><option value="failed">Fallido</option></select><ChevronDown /></div>
+      <button className="test-launch" onClick={() => setShowPostPurchaseTest(true)}><Send /> Probar Postcompra</button>
       <button className="primary" onClick={refreshFromFirstPage} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Actualizar</button>
     </div>
     {error && <ErrorBox message={error} />}
@@ -394,7 +396,69 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
       </Fragment>) : <Empty icon={<Workflow />} text="No hay automatizaciones con estos filtros" />}
     </div>
     {data && <div className="pagination"><span>{data.total} automatizaciones encontradas · {summary?.post_purchase || 0} postcompra · {summary?.cross_sell || 0} cross-sell · {summary?.win_back || 0} win-back</span><div><button disabled={page === 1} onClick={() => setPage(page - 1)}><ChevronLeft /></button><b>Página {page}</b><button disabled={page * data.perPage >= data.total} onClick={() => setPage(page + 1)}><ChevronRight /></button></div></div>}
+    {showPostPurchaseTest && <PostPurchaseTestModal configured={Boolean(data?.mode.testDeliveryConfigured)} onClose={() => setShowPostPurchaseTest(false)} />}
   </section>;
+}
+
+type PostPurchaseTestForm = {
+  secret: string; email: string; first_name: string; last_name: string; phone: string; order_number: string;
+  currency: string; order_total: string; marketing_category: 'granolas' | 'barras' | 'sin_categoria_clara';
+  product_name: string; product_sku: string; product_quantity: string; product_total: string;
+};
+
+function PostPurchaseTestModal({ configured, onClose }: { configured: boolean; onClose: () => void }) {
+  const [form, setForm] = useState<PostPurchaseTestForm>({
+    secret: '', email: '', first_name: 'Cliente', last_name: 'Prueba', phone: '', order_number: 'TEST-001',
+    currency: 'ARS', order_total: '38600', marketing_category: 'granolas', product_name: 'Granola clásica',
+    product_sku: 'GRA-TEST', product_quantity: '1', product_total: '38600',
+  });
+  const [sending, setSending] = useState(false); const [error, setError] = useState('');
+  const [result, setResult] = useState<{ httpStatus?: number; eventId?: string } | null>(null);
+  const change = (key: keyof PostPurchaseTestForm, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const requestBody = {
+    email: form.email, first_name: form.first_name, last_name: form.last_name, phone: form.phone,
+    order_number: form.order_number, currency: form.currency, order_total: Number(form.order_total),
+    marketing_category: form.marketing_category, product_name: form.product_name, product_sku: form.product_sku,
+    product_quantity: Number(form.product_quantity), product_total: Number(form.product_total),
+  };
+  const send = async () => {
+    setSending(true); setError(''); setResult(null);
+    try {
+      const response = await api<{ ok: boolean; httpStatus?: number; eventId?: string }>('/automations/test/post-purchase', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Automation-Test-Secret': form.secret },
+        body: JSON.stringify(requestBody),
+      });
+      setResult(response);
+    } catch (e) { setError(e instanceof Error ? e.message : 'No se pudo enviar la prueba.'); }
+    finally { setSending(false); }
+  };
+  return <Modal title="Probar Postcompra en emBlue" onClose={onClose}>
+    <div className="automation-test-modal">
+      <div className="automation-test-intro"><Send /><span><strong>Simulación independiente de la cola</strong><small>Envía el JSON inmediatamente al conector de Postcompra. No crea, modifica ni consume trabajos reales.</small></span></div>
+      {!configured && <div className="automation-test-warning"><AlertCircle />El backend aún no informa una clave de prueba configurada. Agregá <code>AUTOMATION_TEST_SECRET</code> en Easypanel y volvé a desplegar.</div>}
+      <div className="automation-test-grid">
+        <div className="automation-test-form">
+          <label className="span-2">Clave de prueba<input type="password" autoComplete="off" value={form.secret} onChange={(e) => change('secret', e.target.value)} placeholder="AUTOMATION_TEST_SECRET" /></label>
+          <label className="span-2">Email de destino<input type="email" value={form.email} onChange={(e) => change('email', e.target.value)} placeholder="tu-email@dominio.com" /></label>
+          <label>Nombre<input value={form.first_name} onChange={(e) => change('first_name', e.target.value)} /></label>
+          <label>Apellido<input value={form.last_name} onChange={(e) => change('last_name', e.target.value)} /></label>
+          <label>Teléfono<input value={form.phone} onChange={(e) => change('phone', e.target.value)} /></label>
+          <label>N.º de pedido<input value={form.order_number} onChange={(e) => change('order_number', e.target.value)} /></label>
+          <label>Moneda<input value={form.currency} onChange={(e) => change('currency', e.target.value.toUpperCase())} maxLength={3} /></label>
+          <label>Total del pedido<input type="number" min="0" value={form.order_total} onChange={(e) => change('order_total', e.target.value)} /></label>
+          <label className="span-2">Segmento<select value={form.marketing_category} onChange={(e) => change('marketing_category', e.target.value)}><option value="granolas">Granolas</option><option value="barras">Barras</option><option value="sin_categoria_clara">Sin categoría clara</option></select></label>
+          <label className="span-2">Producto<input value={form.product_name} onChange={(e) => change('product_name', e.target.value)} /></label>
+          <label>SKU<input value={form.product_sku} onChange={(e) => change('product_sku', e.target.value)} /></label>
+          <label>Cantidad<input type="number" min="1" value={form.product_quantity} onChange={(e) => change('product_quantity', e.target.value)} /></label>
+          <label className="span-2">Total del producto<input type="number" min="0" value={form.product_total} onChange={(e) => change('product_total', e.target.value)} /></label>
+        </div>
+        <div className="automation-test-preview"><span>Vista previa de los datos editables</span><pre>{JSON.stringify(requestBody, null, 2)}</pre><small>El backend completa identificadores, fecha, categorías y estructura final compatible con Data Lab.</small></div>
+      </div>
+      {error && <ErrorBox message={error} />}
+      {result && <div className="automation-test-success"><CheckCircle2 /><span><strong>Prueba recibida por emBlue</strong><small>HTTP {result.httpStatus || 200}{result.eventId ? ` · Evento ${result.eventId}` : ''}. Revisá el modo de prueba o Journey en Data Lab.</small></span></div>}
+      <div className="automation-test-actions"><button className="test-cancel" onClick={onClose}>Cerrar</button><button className="primary" disabled={sending || !form.secret || !form.email || !form.product_name} onClick={send}>{sending ? <RefreshCw className="spin" /> : <Send />}{sending ? 'Enviando…' : 'Enviar a emBlue'}</button></div>
+    </div>
+  </Modal>;
 }
 
 function AutomationDetail({ job, deliveryEnabled, onSelectOrder }: { job: AutomationJob; deliveryEnabled: boolean; onSelectOrder: (id: number) => void }) {
@@ -412,7 +476,7 @@ function AutomationDetail({ job, deliveryEnabled, onSelectOrder }: { job: Automa
 }
 
 function AutomationState({ job, deliveryEnabled }: { job: AutomationJob; deliveryEnabled: boolean }) {
-  const labels: Record<AutomationStatus, string> = { scheduled: 'Programado', ready: deliveryEnabled ? 'Listo' : 'Listo · prueba', processing: 'Enviando', sent: 'Enviado', cancelled: 'Cancelado', skipped: 'Omitido', failed: 'Fallido' };
+  const labels: Record<AutomationStatus, string> = { scheduled: 'Programado', ready: deliveryEnabled ? 'Listo' : 'Listo · prueba', processing: 'Enviando', sent: 'Enviado', expired: 'Vencido · no enviado', cancelled: 'Cancelado', skipped: 'Omitido', failed: 'Fallido' };
   return <span className={`automation-state state-${job.status}`}>{labels[job.status]}</span>;
 }
 function automationDeliveryEnabled(type: AutomationType, data: AutomationJobsResponse) {
@@ -429,6 +493,7 @@ function automationDelayLabel(type: AutomationType) { return type === 'post_purc
 function marketingCategoryName(value: string) { return value === 'granolas' ? 'Granolas' : value === 'barras' ? 'Barras' : 'Sin categoría clara'; }
 function automationRemaining(job: AutomationJob) {
   if (job.status === 'sent') return 'Enviado';
+  if (job.status === 'expired') return 'Vencido · no se enviará';
   if (job.status === 'cancelled') return 'Cancelado';
   if (job.status === 'failed') return 'Requiere revisión';
   const seconds = Math.floor((new Date(job.due_at).getTime() - Date.now()) / 1000);

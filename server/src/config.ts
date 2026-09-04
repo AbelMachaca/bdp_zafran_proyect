@@ -12,8 +12,10 @@ export const config = {
   embluePostPurchaseEnabled: process.env.EMBLUE_POST_PURCHASE_ENABLED === 'true',
   embluePostPurchaseUrl: process.env.EMBLUE_POST_PURCHASE_URL || '',
   embluePostPurchaseToken: process.env.EMBLUE_POST_PURCHASE_TOKEN || '',
+  embluePostPurchaseActiveFrom: validDate(process.env.EMBLUE_POST_PURCHASE_ACTIVE_FROM),
   emblueTimeoutMs: positiveNumber(process.env.EMBLUE_TIMEOUT_MS, 12_000),
   emblueMaxAttempts: positiveNumber(process.env.EMBLUE_MAX_ATTEMPTS, 5),
+  automationTestSecret: process.env.AUTOMATION_TEST_SECRET || '',
 };
 
 export const credentialsConfigured = () =>

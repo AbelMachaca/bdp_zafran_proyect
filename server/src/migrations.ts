@@ -322,6 +322,34 @@ const migrations: Migration[] = [
         ON automation_jobs (automation_type, status, next_attempt_at, due_at);
     `,
   },
+  {
+    version: 6,
+    name: 'expired_jobs_and_emblue_tests',
+    sql: `
+      ALTER TABLE automation_jobs DROP CONSTRAINT IF EXISTS automation_jobs_status_check;
+      ALTER TABLE automation_jobs ADD CONSTRAINT automation_jobs_status_check
+        CHECK (status IN ('scheduled', 'ready', 'processing', 'sent', 'cancelled', 'skipped', 'failed', 'expired'));
+      ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ;
+
+      UPDATE automation_jobs
+      SET status = 'expired', expired_at = NOW(), updated_at = NOW(),
+        last_error = 'No enviado: vencido antes de habilitar Postcompra en emBlue'
+      WHERE automation_type = 'post_purchase'
+        AND status IN ('scheduled', 'ready') AND due_at <= NOW();
+
+      CREATE TABLE IF NOT EXISTS automation_test_deliveries (
+        id BIGSERIAL PRIMARY KEY,
+        automation_type TEXT NOT NULL,
+        recipient_email TEXT NOT NULL,
+        payload JSONB NOT NULL,
+        outcome TEXT NOT NULL,
+        http_status INTEGER,
+        response_body TEXT,
+        error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `,
+  },
 ];
 
 export async function runMigrations() {

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 import type { PoolClient } from 'pg';
 import { z } from 'zod';
@@ -49,6 +50,7 @@ export type WooAutomationOrder = {
 
 const invalidStatuses = new Set(['cancelled', 'failed', 'refunded', 'trash']);
 const productCategoryCache = new Map<number, { expires: number; categories: Array<{ id: number; name: string }> }>();
+const testRequests = new Map<string, { windowStartedAt: number; count: number }>();
 
 export async function enrichOrderCategories(order: WooAutomationOrder) {
   const productIds = [...new Set((order.line_items || []).map((item) => Number(item.product_id || 0)).filter(Boolean))].slice(0, 30);
@@ -408,6 +410,14 @@ export function startAutomationWorker() {
             ))
           )
       `);
+      if (config.embluePostPurchaseActiveFrom) {
+        await pool.query(`
+          UPDATE automation_jobs SET status = 'expired', expired_at = NOW(), updated_at = NOW(),
+            last_error = 'No enviado: vencido antes de habilitar Postcompra en emBlue'
+          WHERE automation_type = 'post_purchase' AND status IN ('scheduled', 'ready')
+            AND due_at < $1
+        `, [config.embluePostPurchaseActiveFrom]);
+      }
       if (postPurchaseDeliveryEnabled()) await processPostPurchaseJobs();
       const result = await pool.query(`
         UPDATE automation_jobs SET status = 'ready', updated_at = NOW()
@@ -429,7 +439,8 @@ export function startAutomationWorker() {
 }
 
 function postPurchaseDeliveryEnabled() {
-  return config.emblueEnabled && config.embluePostPurchaseEnabled && Boolean(config.embluePostPurchaseUrl);
+  return config.emblueEnabled && config.embluePostPurchaseEnabled
+    && Boolean(config.embluePostPurchaseUrl && config.embluePostPurchaseActiveFrom);
 }
 
 async function processPostPurchaseJobs() {
@@ -450,6 +461,7 @@ async function claimPostPurchaseJob() {
       WHERE j.automation_type = 'post_purchase'
         AND j.status IN ('scheduled', 'ready')
         AND j.due_at <= NOW()
+        AND j.due_at >= $1
         AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= NOW())
         AND o.status NOT IN ('cancelled', 'failed', 'refunded', 'trash')
         AND c.email <> ''
@@ -467,27 +479,13 @@ async function claimPostPurchaseJob() {
     FROM claimed
     JOIN automation_contacts c ON c.id = claimed.contact_id
     JOIN automation_orders o ON o.woo_order_id = claimed.trigger_order_id
-  `);
+  `, [config.embluePostPurchaseActiveFrom]);
   return result.rows[0] || null;
 }
 
 async function deliverPostPurchaseJob(job: EmblueJobRow) {
-  let httpStatus: number | null = null;
-  let responseBody = '';
-  let deliveryError = '';
-  try {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
-    if (config.embluePostPurchaseToken) headers.Authorization = `Bearer ${config.embluePostPurchaseToken}`;
-    const response = await fetch(config.embluePostPurchaseUrl, {
-      method: 'POST', headers, body: JSON.stringify(buildEmbluePostPurchasePayload(job)),
-      signal: AbortSignal.timeout(config.emblueTimeoutMs),
-    });
-    httpStatus = response.status;
-    responseBody = (await response.text()).slice(0, 4000);
-    if (!response.ok) throw new Error(`emBlue Data Lab respondió HTTP ${response.status}`);
-  } catch (error) {
-    deliveryError = error instanceof Error ? error.message : 'Error desconocido al enviar a emBlue';
-  }
+  const delivery = await postToEmblue(buildEmbluePostPurchasePayload(job));
+  const { httpStatus, responseBody, deliveryError } = delivery;
 
   const attempt = Number(job.attempts) + 1;
   const success = !deliveryError;
@@ -515,9 +513,106 @@ async function deliverPostPurchaseJob(job: EmblueJobRow) {
   }
 }
 
+async function postToEmblue(payload: ReturnType<typeof buildEmbluePostPurchasePayload>) {
+  let httpStatus: number | null = null;
+  let responseBody = '';
+  let deliveryError = '';
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    if (config.embluePostPurchaseToken) headers.Authorization = `Bearer ${config.embluePostPurchaseToken}`;
+    const response = await fetch(config.embluePostPurchaseUrl, {
+      method: 'POST', headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(config.emblueTimeoutMs),
+    });
+    httpStatus = response.status;
+    responseBody = (await response.text()).slice(0, 4000);
+    if (!response.ok) deliveryError = `emBlue Data Lab respondió HTTP ${response.status}`;
+  } catch (error) {
+    deliveryError = error instanceof Error ? error.message : 'Error desconocido al enviar a emBlue';
+  }
+  return { httpStatus, responseBody, deliveryError };
+}
+
 function retryDelayMs(attempt: number) {
   const minutes = [5, 30, 120, 480, 1440];
   return (minutes[Math.min(attempt - 1, minutes.length - 1)] || 1440) * 60_000;
+}
+
+const postPurchaseTestSchema = z.object({
+  email: z.string().trim().email().max(254),
+  first_name: z.string().trim().max(100).default(''),
+  last_name: z.string().trim().max(100).default(''),
+  phone: z.string().trim().max(40).default(''),
+  order_number: z.string().trim().min(1).max(50),
+  currency: z.string().trim().length(3).default('ARS'),
+  order_total: z.coerce.number().min(0).max(999_999_999),
+  marketing_category: z.enum(['granolas', 'barras', 'sin_categoria_clara']),
+  product_name: z.string().trim().min(1).max(200),
+  product_sku: z.string().trim().max(100).default(''),
+  product_quantity: z.coerce.number().positive().max(10_000),
+  product_total: z.coerce.number().min(0).max(999_999_999),
+});
+
+export async function postPurchaseTestHandler(req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!config.automationTestSecret) return res.status(503).json({ error: 'Falta configurar AUTOMATION_TEST_SECRET' });
+    if (!config.embluePostPurchaseUrl) return res.status(503).json({ error: 'Falta configurar EMBLUE_POST_PURCHASE_URL' });
+    const providedSecret = String(req.header('x-automation-test-secret') || '');
+    if (!safeSecretMatch(providedSecret, config.automationTestSecret)) return res.status(401).json({ error: 'Clave de prueba incorrecta' });
+    if (!allowTestRequest(req.ip || 'unknown')) return res.status(429).json({ error: 'Demasiadas pruebas; esperá un minuto' });
+    const input = postPurchaseTestSchema.parse(req.body);
+    const now = new Date();
+    const categoryName = input.marketing_category === 'granolas' ? 'Granolas'
+      : input.marketing_category === 'barras' ? 'Barras' : 'Sin categoría clara';
+    const isGranola = input.marketing_category === 'granolas';
+    const isBarra = input.marketing_category === 'barras';
+    const job: EmblueJobRow = {
+      id: `test-${crypto.randomUUID()}`, due_at: addDays(now, 10), attempts: 0,
+      contact_id: 'test', email: input.email, first_name: input.first_name, last_name: input.last_name,
+      phone: input.phone, marketing_opt_in: true, marketing_opt_in_at: now,
+      trigger_order_id: String(Date.now()), order_number: input.order_number, order_status: 'processing',
+      currency: input.currency.toUpperCase(), order_total: String(input.order_total), processing_at: now,
+      payload: {
+        order_number: input.order_number, currency: input.currency.toUpperCase(), total: String(input.order_total),
+        categories: [categoryName], marketing_categories: [input.marketing_category],
+        primary_marketing_category: input.marketing_category,
+        marketing_category_amounts: { granolas: isGranola ? input.product_total : 0, barras: isBarra ? input.product_total : 0 },
+        marketing_category_quantities: { granolas: isGranola ? input.product_quantity : 0, barras: isBarra ? input.product_quantity : 0 },
+        bought_granolas: isGranola, bought_barras: isBarra,
+        products: [{
+          product_id: 999999, name: input.product_name, sku: input.product_sku,
+          quantity: input.product_quantity, total: String(input.product_total), categories: [{ name: categoryName }],
+        }],
+      },
+    };
+    const payload = buildEmbluePostPurchasePayload(job);
+    const delivery = await postToEmblue(payload);
+    await pool.query(`
+      INSERT INTO automation_test_deliveries
+        (automation_type, recipient_email, payload, outcome, http_status, response_body, error)
+      VALUES ('post_purchase', $1, $2::jsonb, $3, $4, $5, $6)
+    `, [
+      input.email, JSON.stringify(payload), delivery.deliveryError ? 'failed' : 'sent', delivery.httpStatus,
+      delivery.responseBody || null, delivery.deliveryError || null,
+    ]);
+    if (delivery.deliveryError) return res.status(502).json({ error: delivery.deliveryError, httpStatus: delivery.httpStatus });
+    return res.json({ ok: true, httpStatus: delivery.httpStatus, eventId: payload.event_id });
+  } catch (error) { return next(error); }
+}
+
+function safeSecretMatch(provided: string, expected: string) {
+  const providedBuffer = Buffer.from(provided);
+  const expectedBuffer = Buffer.from(expected);
+  return providedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+}
+
+function allowTestRequest(key: string) {
+  const now = Date.now();
+  for (const [storedKey, value] of testRequests) if (now - value.windowStartedAt >= 60_000) testRequests.delete(storedKey);
+  const current = testRequests.get(key);
+  if (!current) { testRequests.set(key, { windowStartedAt: now, count: 1 }); return true; }
+  if (current.count >= 5) return false;
+  current.count += 1;
+  return true;
 }
 
 export async function automationStatusHandler(_req: Request, res: Response, next: NextFunction) {
@@ -529,6 +624,8 @@ export async function automationStatusHandler(_req: Request, res: Response, next
     res.json({
       enabled: Boolean(config.automationsActiveFrom), emblueEnabled: config.emblueEnabled,
       connectors: { postPurchase: postPurchaseDeliveryEnabled(), crossSell: false, winBack: false },
+      testDeliveryConfigured: Boolean(config.embluePostPurchaseUrl && config.automationTestSecret),
+      postPurchaseActiveFrom: config.embluePostPurchaseActiveFrom?.toISOString() || null,
       activeFrom: config.automationsActiveFrom?.toISOString() || null, jobs: counts.rows,
     });
   } catch (error) { next(error); }
@@ -543,7 +640,7 @@ export async function automationJobsHandler(req: Request, res: Response, next: N
     const query = z.object({
       page: z.coerce.number().int().min(1).default(1),
       per_page: z.coerce.number().int().min(1).max(100).default(25),
-      status: optionalQueryValue(z.enum(['scheduled', 'ready', 'processing', 'sent', 'cancelled', 'skipped', 'failed'])),
+      status: optionalQueryValue(z.enum(['scheduled', 'ready', 'processing', 'sent', 'cancelled', 'skipped', 'failed', 'expired'])),
       type: optionalQueryValue(z.enum(['post_purchase', 'cross_sell', 'win_back'])),
       search: optionalQueryValue(z.string().trim().max(100)),
     }).parse(req.query);
@@ -566,6 +663,7 @@ export async function automationJobsHandler(req: Request, res: Response, next: N
           COUNT(*) FILTER (WHERE status = 'ready')::int AS ready,
           COUNT(*) FILTER (WHERE status = 'sent')::int AS sent,
           COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
+          COUNT(*) FILTER (WHERE status = 'expired')::int AS expired,
           COUNT(*) FILTER (WHERE status IN ('failed', 'skipped'))::int AS problems,
           COUNT(*) FILTER (WHERE automation_type = 'post_purchase')::int AS post_purchase,
           COUNT(*) FILTER (WHERE automation_type = 'cross_sell')::int AS cross_sell,
@@ -581,7 +679,7 @@ export async function automationJobsHandler(req: Request, res: Response, next: N
       `, parameters),
       pool.query(`
         SELECT j.id, j.automation_type, j.trigger_order_id, j.due_at, j.next_attempt_at, j.status, j.attempts,
-          j.last_error, j.created_at, j.updated_at, j.sent_at, j.cancelled_at, j.payload,
+          j.last_error, j.created_at, j.updated_at, j.sent_at, j.cancelled_at, j.expired_at, j.payload,
           EXTRACT(EPOCH FROM (j.due_at - NOW()))::bigint AS remaining_seconds,
           c.id AS contact_id, c.email, c.first_name, c.last_name, c.phone,
           c.marketing_opt_in AS current_marketing_opt_in,
@@ -613,6 +711,8 @@ export async function automationJobsHandler(req: Request, res: Response, next: N
       mode: {
         enabled: Boolean(config.automationsActiveFrom), emblueEnabled: config.emblueEnabled,
         connectors: { postPurchase: postPurchaseDeliveryEnabled(), crossSell: false, winBack: false },
+        testDeliveryConfigured: Boolean(config.embluePostPurchaseUrl && config.automationTestSecret),
+        postPurchaseActiveFrom: config.embluePostPurchaseActiveFrom?.toISOString() || null,
       },
     });
   } catch (error) { next(error); }

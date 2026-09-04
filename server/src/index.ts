@@ -8,7 +8,7 @@ import { capabilities, explorerResources } from './capabilities.js';
 import { orderDimensions, summarizeEmailMarketing, summarizeOrders, type AnalyticsOrder } from './analytics.js';
 import { databaseConfigured } from './database.js';
 import { runMigrations } from './migrations.js';
-import { automationJobsHandler, automationStatusHandler, startAutomationWorker } from './automations.js';
+import { automationJobsHandler, automationStatusHandler, postPurchaseTestHandler, startAutomationWorker } from './automations.js';
 import { wooOrderWebhookHandler } from './webhooks.js';
 
 const app = express();
@@ -40,6 +40,7 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/automations/status', automationStatusHandler);
 app.get('/api/automations/jobs', automationJobsHandler);
+app.post('/api/automations/test/post-purchase', postPurchaseTestHandler);
 
 app.get('/api/capabilities', async (_req, res, next) => {
   try {

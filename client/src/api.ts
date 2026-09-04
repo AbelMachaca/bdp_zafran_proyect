@@ -1,7 +1,7 @@
-export async function api<T>(path: string): Promise<T> {
+export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   window.dispatchEvent(new CustomEvent('api-loading', { detail: 1 }));
   try {
-    const response = await fetch(`/api${path}`);
+    const response = await fetch(`/api${path}`, init);
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `Error ${response.status}`);
     return data as T;
