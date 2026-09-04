@@ -64,6 +64,9 @@ CLIENT_ORIGIN=https://dominio-publico-del-frontend
 WC_WEBHOOK_SECRET=generar_un_secreto_aleatorio
 AUTOMATIONS_ACTIVE_FROM=2026-08-01T18:00:00-03:00
 EMBLUE_ENABLED=false
+EMBLUE_POST_PURCHASE_ENABLED=false
+EMBLUE_POST_PURCHASE_URL=
+EMBLUE_POST_PURCHASE_TOKEN=
 ```
 
 No copies `server/.env` al contenedor. Cargá los valores reales desde las variables de entorno de Easypanel. Para PostgreSQL usá la URL interna del servicio cuando ambos estén en el mismo proyecto.
@@ -129,3 +132,20 @@ GET /api/automations/jobs?page=1&per_page=25
 El endpoint de trabajos admite los filtros `status`, `type` (`post_purchase`, `cross_sell` o `win_back`) y `search`. El frontend los presenta en la sección **Automatizaciones**, junto con consentimiento, fecha prevista, tiempo restante, pedido disparador, productos, categorías e historial del último intento.
 
 Cross-sell se programa 35 días y Win-back 90 días exactos después de que el último pedido entra en `processing`. Una compra posterior reinicia ambos plazos. El consentimiento promocional del contacto es persistente: una aceptación previa no se revoca porque la casilla no se marque nuevamente en otro pedido; únicamente una baja explícita deberá desactivarlo.
+
+Cada trabajo conserva las categorías originales de WooCommerce únicamente como referencia y agrega la clasificación que usará emBlue: `granolas`, `barras` o `sin_categoria_clara`. Si una compra contiene Granolas y Barras, `primary_marketing_category` se elige por el mayor importe acumulado; ante empate o ausencia de importes, por la mayor cantidad de unidades y, si todo empata, por el primer grupo que aparece en el pedido. También se incluyen `bought_granolas`, `bought_barras`, los importes y las cantidades acumuladas por grupo para simplificar y auditar el mapeo.
+
+### Postcompra en emBlue Data Lab / Journeys
+
+El envío de Postcompra utiliza el conector personalizado de Data Lab indicado por `EMBLUE_POST_PURCHASE_URL`. Con la opción **Sin autenticación adicional**, `EMBLUE_POST_PURCHASE_TOKEN` debe quedar vacío. Si luego se selecciona seguridad con API Token, esa variable contiene únicamente el token y el backend agrega `Authorization: Bearer ...`.
+
+Hay dos seguros independientes y ambos deben estar activos para enviar:
+
+```text
+EMBLUE_ENABLED=true
+EMBLUE_POST_PURCHASE_ENABLED=true
+```
+
+Primero se configura y prueba el mapeo manteniendo ambas variables en `false`. No se deben activar hasta que la URL completa y el Journey estén revisados. El JSON lleva los datos simples del contacto y pedido en el nivel superior —incluido `email`, que Data Lab exige— y `products` como arreglo de objetos para utilizarlo como campo dinámico en el Journey.
+
+Cada trabajo se toma de forma exclusiva para evitar envíos simultáneos duplicados. Las respuestas se registran en `automation_attempts`; los fallos se reintentan hasta `EMBLUE_MAX_ATTEMPTS` con esperas progresivas. Cross-sell y Win-back permanecen en modo prueba hasta disponer de sus propios conectores.

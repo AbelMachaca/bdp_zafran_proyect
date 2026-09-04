@@ -12,6 +12,32 @@ type WooLineItem = {
   _categories?: Array<{ id: number; name: string }>;
 };
 type RetentionAutomation = 'cross_sell' | 'win_back';
+type StoredJobPayload = {
+  order_id?: number; order_number?: string; currency?: string; total?: string;
+  products?: Array<{
+    product_id?: number; variation_id?: number; name?: string; sku?: string;
+    quantity?: number; total?: string; categories?: Array<{ id?: number; name?: string }>;
+  }>;
+  categories?: string[]; marketing_categories?: MarketingCategory[];
+  primary_marketing_category?: MarketingCategory;
+  marketing_category_amounts?: { granolas?: number; barras?: number };
+  marketing_category_quantities?: { granolas?: number; barras?: number };
+  bought_granolas?: boolean; bought_barras?: boolean;
+};
+type EmblueJobRow = {
+  id: string; due_at: Date | string; attempts: number; payload: StoredJobPayload;
+  contact_id: string; email: string; first_name: string; last_name: string; phone: string;
+  marketing_opt_in: boolean; marketing_opt_in_at: Date | string | null;
+  trigger_order_id: string; order_number: string; order_status: string; currency: string | null;
+  order_total: string | null; processing_at: Date | string | null;
+};
+export type MarketingCategory = 'granolas' | 'barras' | 'sin_categoria_clara';
+export type MarketingCategorySummary = {
+  categories: MarketingCategory[];
+  primary: MarketingCategory;
+  amounts: { granolas: number; barras: number };
+  quantities: { granolas: number; barras: number };
+};
 export type WooAutomationOrder = {
   id?: number; number?: string; status?: string; currency?: string; total?: string;
   customer_id?: number; date_created?: string; date_created_gmt?: string; date_modified?: string; date_modified_gmt?: string;
@@ -62,6 +88,42 @@ export function retainedMarketingConsent(previouslyAllowed: boolean, allowedInOr
 export function automationDueAt(type: 'post_purchase' | RetentionAutomation, processingAt: Date) {
   const delayDays = type === 'post_purchase' ? 10 : type === 'cross_sell' ? 35 : 90;
   return addDays(processingAt, delayDays);
+}
+
+export function marketingCategories(order: WooAutomationOrder): MarketingCategory[] {
+  return marketingCategorySummary(order).categories;
+}
+
+export function marketingCategorySummary(order: WooAutomationOrder): MarketingCategorySummary {
+  const scores = (order.line_items || []).map((item, index) => {
+    const searchable = [item.name || '', ...(item._categories || []).map((category) => category.name)]
+      .map(normalizedText).join(' ');
+    return {
+      index,
+      granolas: /\bgranolas?\b/.test(searchable),
+      barras: /\bbarras?\b/.test(searchable),
+      amount: numeric(item.total) || 0,
+      quantity: numeric(item.quantity) || 0,
+    };
+  });
+  const amount = (category: 'granolas' | 'barras') => scores.reduce((sum, item) => sum + (item[category] ? item.amount : 0), 0);
+  const quantity = (category: 'granolas' | 'barras') => scores.reduce((sum, item) => sum + (item[category] ? item.quantity : 0), 0);
+  const amounts = { granolas: amount('granolas'), barras: amount('barras') };
+  const quantities = { granolas: quantity('granolas'), barras: quantity('barras') };
+  const categories: MarketingCategory[] = [];
+  if (scores.some((item) => item.granolas)) categories.push('granolas');
+  if (scores.some((item) => item.barras)) categories.push('barras');
+  if (!categories.length) return { categories: ['sin_categoria_clara'], primary: 'sin_categoria_clara', amounts, quantities };
+  if (categories.length === 1) return { categories, primary: categories[0] || 'sin_categoria_clara', amounts, quantities };
+  let primary: MarketingCategory;
+  if (amounts.granolas !== amounts.barras) primary = amounts.granolas > amounts.barras ? 'granolas' : 'barras';
+  else if (quantities.granolas !== quantities.barras) primary = quantities.granolas > quantities.barras ? 'granolas' : 'barras';
+  else {
+    const firstGranola = scores.find((item) => item.granolas)?.index ?? Number.MAX_SAFE_INTEGER;
+    const firstBar = scores.find((item) => item.barras)?.index ?? Number.MAX_SAFE_INTEGER;
+    primary = firstGranola <= firstBar ? 'granolas' : 'barras';
+  }
+  return { categories, primary, amounts, quantities };
 }
 
 export async function persistWooOrder(client: PoolClient, order: WooAutomationOrder) {
@@ -249,6 +311,7 @@ async function cancelOrderJobs(client: PoolClient, orderId: number, reason: stri
 }
 
 function jobPayload(order: WooAutomationOrder) {
+  const segment = marketingCategorySummary(order);
   return {
     order_id: order.id,
     order_number: order.number || String(order.id),
@@ -259,50 +322,202 @@ function jobPayload(order: WooAutomationOrder) {
       sku: item.sku, quantity: item.quantity, total: item.total, categories: item._categories || [],
     })),
     categories: [...new Set((order.line_items || []).flatMap((item) => (item._categories || []).map((category) => category.name)))],
+    marketing_categories: segment.categories,
+    primary_marketing_category: segment.primary,
+    marketing_category_amounts: segment.amounts,
+    marketing_category_quantities: segment.quantities,
+    bought_granolas: segment.categories.includes('granolas'),
+    bought_barras: segment.categories.includes('barras'),
+  };
+}
+
+export function buildEmbluePostPurchasePayload(job: EmblueJobRow) {
+  const stored = job.payload || {};
+  return {
+    event_id: `zafran-post-purchase-${job.id}`,
+    schema_version: 1,
+    automation_type: 'post_purchase',
+    email: job.email,
+    first_name: job.first_name || '',
+    last_name: job.last_name || '',
+    phone: job.phone || '',
+    marketing_opt_in: job.marketing_opt_in,
+    marketing_opt_in_at: isoDate(job.marketing_opt_in_at),
+    order_id: Number(job.trigger_order_id),
+    order_number: job.order_number || String(job.trigger_order_id),
+    order_status: job.order_status,
+    currency: job.currency || stored.currency || 'ARS',
+    order_total: numeric(job.order_total ?? stored.total) || 0,
+    order_processing_at: isoDate(job.processing_at),
+    scheduled_at: isoDate(job.due_at),
+    marketing_category: stored.primary_marketing_category || 'sin_categoria_clara',
+    marketing_categories: (stored.marketing_categories || ['sin_categoria_clara']).join(', '),
+    bought_granolas: Boolean(stored.bought_granolas),
+    bought_barras: Boolean(stored.bought_barras),
+    granolas_amount: numeric(stored.marketing_category_amounts?.granolas) || 0,
+    barras_amount: numeric(stored.marketing_category_amounts?.barras) || 0,
+    granolas_quantity: numeric(stored.marketing_category_quantities?.granolas) || 0,
+    barras_quantity: numeric(stored.marketing_category_quantities?.barras) || 0,
+    woocommerce_categories: (stored.categories || []).join(', '),
+    products: (stored.products || []).map((product) => ({
+      product_id: product.product_id || null,
+      variation_id: product.variation_id || null,
+      name: product.name || '',
+      sku: product.sku || '',
+      quantity: numeric(product.quantity) || 0,
+      total: numeric(product.total) || 0,
+      categories: (product.categories || []).map((category) => category.name).filter(Boolean).join(', '),
+    })),
   };
 }
 
 export function startAutomationWorker() {
+  let running = false;
   const run = async () => {
-    if (config.emblueEnabled) return;
+    if (running) return;
+    running = true;
     try {
+      await pool.query(`
+        UPDATE automation_jobs SET status = 'scheduled', locked_at = NULL, updated_at = NOW(),
+          last_error = COALESCE(last_error, 'Intento anterior interrumpido; reprogramado automáticamente')
+        WHERE status = 'processing' AND locked_at < NOW() - INTERVAL '15 minutes'
+      `);
       await pool.query(`
         UPDATE automation_jobs j
         SET status = 'cancelled', cancelled_at = NOW(), updated_at = NOW(),
           last_error = CASE
-            WHEN NOT c.marketing_opt_in THEN 'El contacto no tiene consentimiento promocional activo'
             WHEN o.status IN ('cancelled', 'failed', 'refunded', 'trash') THEN 'El pedido disparador dejó de ser válido'
+            WHEN c.email = '' THEN 'El contacto no tiene correo electrónico'
+            WHEN NOT c.marketing_opt_in THEN 'El contacto no tiene consentimiento promocional activo'
             ELSE 'Existe una compra posterior'
           END
         FROM automation_contacts c, automation_orders o
         WHERE j.contact_id = c.id AND j.trigger_order_id = o.woo_order_id
-          AND j.automation_type IN ('cross_sell', 'win_back')
-          AND j.status = 'scheduled' AND j.due_at <= NOW()
+          AND j.status IN ('scheduled', 'ready') AND j.due_at <= NOW()
           AND (
-            NOT c.marketing_opt_in
-            OR o.status IN ('cancelled', 'failed', 'refunded', 'trash')
-            OR EXISTS (
-              SELECT 1 FROM automation_orders newer
-              WHERE newer.contact_id = j.contact_id
-                AND newer.woo_order_id <> j.trigger_order_id
-                AND newer.status IN ('processing', 'completed')
-                AND newer.processing_at > o.processing_at
-            )
+            o.status IN ('cancelled', 'failed', 'refunded', 'trash')
+            OR c.email = ''
+            OR (j.automation_type IN ('cross_sell', 'win_back') AND (
+              NOT c.marketing_opt_in OR EXISTS (
+                SELECT 1 FROM automation_orders newer
+                WHERE newer.contact_id = j.contact_id
+                  AND newer.woo_order_id <> j.trigger_order_id
+                  AND newer.status IN ('processing', 'completed')
+                  AND newer.processing_at > o.processing_at
+              )
+            ))
           )
       `);
+      if (postPurchaseDeliveryEnabled()) await processPostPurchaseJobs();
       const result = await pool.query(`
         UPDATE automation_jobs SET status = 'ready', updated_at = NOW()
         WHERE status = 'scheduled' AND due_at <= NOW()
+          AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())
+          AND NOT (automation_type = 'post_purchase' AND $1)
         RETURNING id
-      `);
+      `, [postPurchaseDeliveryEnabled()]);
       if (result.rowCount) console.log(`${result.rowCount} automatización(es) listas en modo prueba.`);
     } catch (error) {
       console.error('No se pudo actualizar la cola de automatizaciones.', error);
+    } finally {
+      running = false;
     }
   };
   void run();
   const timer = setInterval(() => void run(), 60_000);
   timer.unref();
+}
+
+function postPurchaseDeliveryEnabled() {
+  return config.emblueEnabled && config.embluePostPurchaseEnabled && Boolean(config.embluePostPurchaseUrl);
+}
+
+async function processPostPurchaseJobs() {
+  for (let processed = 0; processed < 20; processed += 1) {
+    const job = await claimPostPurchaseJob();
+    if (!job) return;
+    await deliverPostPurchaseJob(job);
+  }
+}
+
+async function claimPostPurchaseJob() {
+  const result = await pool.query<EmblueJobRow>(`
+    WITH candidate AS (
+      SELECT j.id
+      FROM automation_jobs j
+      JOIN automation_contacts c ON c.id = j.contact_id
+      JOIN automation_orders o ON o.woo_order_id = j.trigger_order_id
+      WHERE j.automation_type = 'post_purchase'
+        AND j.status IN ('scheduled', 'ready')
+        AND j.due_at <= NOW()
+        AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= NOW())
+        AND o.status NOT IN ('cancelled', 'failed', 'refunded', 'trash')
+        AND c.email <> ''
+      ORDER BY COALESCE(j.next_attempt_at, j.due_at), j.id
+      FOR UPDATE OF j SKIP LOCKED LIMIT 1
+    ), claimed AS (
+      UPDATE automation_jobs j SET status = 'processing', locked_at = NOW(), updated_at = NOW()
+      FROM candidate WHERE j.id = candidate.id RETURNING j.*
+    )
+    SELECT claimed.id, claimed.due_at, claimed.attempts, claimed.payload,
+      c.id AS contact_id, c.email, c.first_name, c.last_name, c.phone,
+      c.marketing_opt_in, c.marketing_opt_in_at,
+      o.woo_order_id AS trigger_order_id, o.order_number, o.status AS order_status,
+      o.currency, o.total AS order_total, o.processing_at
+    FROM claimed
+    JOIN automation_contacts c ON c.id = claimed.contact_id
+    JOIN automation_orders o ON o.woo_order_id = claimed.trigger_order_id
+  `);
+  return result.rows[0] || null;
+}
+
+async function deliverPostPurchaseJob(job: EmblueJobRow) {
+  let httpStatus: number | null = null;
+  let responseBody = '';
+  let deliveryError = '';
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    if (config.embluePostPurchaseToken) headers.Authorization = `Bearer ${config.embluePostPurchaseToken}`;
+    const response = await fetch(config.embluePostPurchaseUrl, {
+      method: 'POST', headers, body: JSON.stringify(buildEmbluePostPurchasePayload(job)),
+      signal: AbortSignal.timeout(config.emblueTimeoutMs),
+    });
+    httpStatus = response.status;
+    responseBody = (await response.text()).slice(0, 4000);
+    if (!response.ok) throw new Error(`emBlue Data Lab respondió HTTP ${response.status}`);
+  } catch (error) {
+    deliveryError = error instanceof Error ? error.message : 'Error desconocido al enviar a emBlue';
+  }
+
+  const attempt = Number(job.attempts) + 1;
+  const success = !deliveryError;
+  const exhausted = !success && attempt >= config.emblueMaxAttempts;
+  const nextAttemptAt = success || exhausted ? null : new Date(Date.now() + retryDelayMs(attempt));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`
+      INSERT INTO automation_attempts (job_id, outcome, http_status, response_body, error)
+      VALUES ($1, $2, $3, $4, $5)
+    `, [job.id, success ? 'sent' : exhausted ? 'failed' : 'retry_scheduled', httpStatus, responseBody || null, deliveryError || null]);
+    await client.query(`
+      UPDATE automation_jobs SET status = $2, attempts = $3, last_error = $4,
+        next_attempt_at = $5, sent_at = CASE WHEN $2 = 'sent' THEN NOW() ELSE sent_at END,
+        locked_at = NULL, updated_at = NOW()
+      WHERE id = $1
+    `, [job.id, success ? 'sent' : exhausted ? 'failed' : 'scheduled', attempt, deliveryError || null, nextAttemptAt]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+function retryDelayMs(attempt: number) {
+  const minutes = [5, 30, 120, 480, 1440];
+  return (minutes[Math.min(attempt - 1, minutes.length - 1)] || 1440) * 60_000;
 }
 
 export async function automationStatusHandler(_req: Request, res: Response, next: NextFunction) {
@@ -313,6 +528,7 @@ export async function automationStatusHandler(_req: Request, res: Response, next
     `);
     res.json({
       enabled: Boolean(config.automationsActiveFrom), emblueEnabled: config.emblueEnabled,
+      connectors: { postPurchase: postPurchaseDeliveryEnabled(), crossSell: false, winBack: false },
       activeFrom: config.automationsActiveFrom?.toISOString() || null, jobs: counts.rows,
     });
   } catch (error) { next(error); }
@@ -364,7 +580,7 @@ export async function automationJobsHandler(req: Request, res: Response, next: N
         ${where}
       `, parameters),
       pool.query(`
-        SELECT j.id, j.automation_type, j.trigger_order_id, j.due_at, j.status, j.attempts,
+        SELECT j.id, j.automation_type, j.trigger_order_id, j.due_at, j.next_attempt_at, j.status, j.attempts,
           j.last_error, j.created_at, j.updated_at, j.sent_at, j.cancelled_at, j.payload,
           EXTRACT(EPOCH FROM (j.due_at - NOW()))::bigint AS remaining_seconds,
           c.id AS contact_id, c.email, c.first_name, c.last_name, c.phone,
@@ -394,7 +610,10 @@ export async function automationJobsHandler(req: Request, res: Response, next: N
     res.json({
       summary: summary.rows[0], data: jobs.rows, total: total.rows[0]?.count || 0,
       page: query.page, perPage: query.per_page,
-      mode: { enabled: Boolean(config.automationsActiveFrom), emblueEnabled: config.emblueEnabled },
+      mode: {
+        enabled: Boolean(config.automationsActiveFrom), emblueEnabled: config.emblueEnabled,
+        connectors: { postPurchase: postPurchaseDeliveryEnabled(), crossSell: false, winBack: false },
+      },
     });
   } catch (error) { next(error); }
 }
@@ -413,4 +632,12 @@ function wooDate(local?: string | null, gmt?: string | null) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 function numeric(value: unknown) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null; }
+function isoDate(value: Date | string | null | undefined) {
+  if (!value) return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+function normalizedText(value: string) {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
 function addDays(value: Date, days: number) { return new Date(value.getTime() + days * 86_400_000); }

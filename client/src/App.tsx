@@ -357,11 +357,13 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
   useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 60_000); return () => window.clearInterval(timer); }, []);
   const refreshFromFirstPage = () => page === 1 ? load() : setPage(1);
   const summary = data?.summary;
+  const postPurchaseConnected = Boolean(data?.mode.connectors?.postPurchase);
+  const anyDeliveryConnected = Boolean(data?.mode.connectors && Object.values(data.mode.connectors).some(Boolean));
   return <section className="page automations-page">
     <PageTitle eyebrow="CICLO DE CLIENTES" title="Automatizaciones" subtitle="Seguimiento completo desde la compra procesada hasta el envío a emBlue." />
     {!configured && <ErrorBox message="La base de datos de automatizaciones todavía no está configurada." />}
-    {data && <div className={`automation-mode ${data.mode.emblueEnabled ? 'live' : 'test'}`}>
-      <div>{data.mode.emblueEnabled ? <CheckCircle2 /> : <AlertCircle />}<span><strong>{data.mode.emblueEnabled ? 'Envíos a emBlue activos' : 'Modo prueba: emBlue desactivado'}</strong><small>{data.mode.emblueEnabled ? 'Los trabajos vencidos pueden enviarse automáticamente.' : 'Los eventos se reciben y programan, pero ningún correo sale todavía.'}</small></span></div>
+    {data && <div className={`automation-mode ${anyDeliveryConnected ? 'live' : 'test'}`}>
+      <div>{anyDeliveryConnected ? <CheckCircle2 /> : <AlertCircle />}<span><strong>{postPurchaseConnected ? 'Postcompra conectado a emBlue Data Lab' : data.mode.emblueEnabled ? 'emBlue habilitado; Postcompra todavía inactivo' : 'Modo prueba: emBlue desactivado'}</strong><small>{postPurchaseConnected ? 'Los trabajos de Postcompra vencidos se envían automáticamente y quedan auditados.' : 'Los eventos se reciben y programan, pero Postcompra todavía no sale hacia emBlue.'}</small></span></div>
       <span>{data.mode.enabled ? 'Programación activa' : 'Programación inactiva'}</span>
     </div>}
     <div className="metrics-grid automation-metrics">
@@ -385,32 +387,37 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
           <span className="automation-contact"><strong>{[job.first_name, job.last_name].filter(Boolean).join(' ') || 'Sin nombre'}</strong><small>{job.email}</small></span>
           <span className="order-number">#{job.order_number || job.trigger_order_id}</span>
           <AutomationConsent job={job} />
-          <AutomationState job={job} emblueEnabled={data.mode.emblueEnabled} />
+          <AutomationState job={job} deliveryEnabled={automationDeliveryEnabled(job.automation_type, data)} />
           <span>{shortDate(job.due_at)}</span><strong className="remaining">{automationRemaining(job)}</strong><ChevronRight className={expanded === job.id ? 'rotated' : ''} />
         </button>
-        {expanded === job.id && <AutomationDetail job={job} emblueEnabled={data.mode.emblueEnabled} onSelectOrder={onSelectOrder} />}
+        {expanded === job.id && <AutomationDetail job={job} deliveryEnabled={automationDeliveryEnabled(job.automation_type, data)} onSelectOrder={onSelectOrder} />}
       </Fragment>) : <Empty icon={<Workflow />} text="No hay automatizaciones con estos filtros" />}
     </div>
     {data && <div className="pagination"><span>{data.total} automatizaciones encontradas · {summary?.post_purchase || 0} postcompra · {summary?.cross_sell || 0} cross-sell · {summary?.win_back || 0} win-back</span><div><button disabled={page === 1} onClick={() => setPage(page - 1)}><ChevronLeft /></button><b>Página {page}</b><button disabled={page * data.perPage >= data.total} onClick={() => setPage(page + 1)}><ChevronRight /></button></div></div>}
   </section>;
 }
 
-function AutomationDetail({ job, emblueEnabled, onSelectOrder }: { job: AutomationJob; emblueEnabled: boolean; onSelectOrder: (id: number) => void }) {
+function AutomationDetail({ job, deliveryEnabled, onSelectOrder }: { job: AutomationJob; deliveryEnabled: boolean; onSelectOrder: (id: number) => void }) {
   const products = job.payload?.products || []; const categories = job.payload?.categories || [];
+  const marketingSegments = job.payload?.marketing_categories || ['sin_categoria_clara'];
   return <div className="automation-detail">
-    <div className="automation-timeline"><strong>Recorrido</strong><div className="timeline-steps"><span className="done"><i>1</i><b>Compra procesada</b><small>{shortDate(job.processing_at)}</small></span><span className={job.status !== 'cancelled' ? 'done' : ''}><i>2</i><b>Programada</b><small>{shortDate(job.due_at)}</small></span><span className={job.status === 'sent' ? 'done' : job.status === 'failed' ? 'failed' : ''}><i>3</i><b>{emblueEnabled ? 'Envío a emBlue' : 'emBlue en prueba'}</b><small>{job.sent_at ? shortDate(job.sent_at) : automationRemaining(job)}</small></span></div></div>
+    <div className="automation-timeline"><strong>Recorrido</strong><div className="timeline-steps"><span className="done"><i>1</i><b>Compra procesada</b><small>{shortDate(job.processing_at)}</small></span><span className={job.status !== 'cancelled' ? 'done' : ''}><i>2</i><b>Programada</b><small>{shortDate(job.due_at)}</small></span><span className={job.status === 'sent' ? 'done' : job.status === 'failed' ? 'failed' : ''}><i>3</i><b>{deliveryEnabled ? 'Envío a emBlue' : 'emBlue en prueba'}</b><small>{job.sent_at ? shortDate(job.sent_at) : automationRemaining(job)}</small></span></div></div>
     <div className="automation-detail-grid">
       <section><h4>Cliente y consentimiento</h4><Info label="Correo" value={job.email} sensitive /><Info label="Teléfono" value={job.phone} sensitive /><Info label="En este pedido" value={job.order_marketing_opt_in ? 'Aceptó promociones' : 'No marcó la casilla'} /><Info label="Consentimiento general" value={job.current_marketing_opt_in ? 'Activo' : 'No activo'} /><Info label="Otorgado" value={shortDate(job.current_marketing_opt_in_at)} /><Info label="Fuente original" value={job.current_consent_source || job.consent_source || 'No informada'} /></section>
       <section><h4>Pedido disparador</h4><Info label="Pedido" value={`#${job.order_number || job.trigger_order_id}`} /><Info label="Estado actual" value={statusNames[job.order_status || ''] || job.order_status} /><Info label="Fecha de compra" value={shortDate(job.date_created)} /><Info label="Total" value={money(job.total || 0)} /><button className="secondary" onClick={() => onSelectOrder(Number(job.trigger_order_id))}>Abrir pedido completo <ChevronRight /></button></section>
-      <section className="automation-products"><h4>Contenido para personalización</h4>{categories.length > 0 && <div className="category-tags">{categories.map((category) => <span key={category}>{category}</span>)}</div>}{products.length ? products.map((product, index) => <div className="automation-product" key={`${product.product_id}-${product.variation_id}-${index}`}><span><strong>{product.name}</strong><small>{product.sku ? `SKU ${product.sku} · ` : ''}{product.categories?.map((category) => category.name).join(', ') || 'Sin categoría'}</small></span><b>x{product.quantity}</b></div>) : <small>No se guardaron productos en este evento.</small>}</section>
-      <section><h4>Diagnóstico</h4><Info label="Intentos" value={String(job.attempts)} /><Info label="Último intento" value={shortDate(job.latest_attempt_at || undefined)} /><Info label="Resultado" value={job.latest_attempt_outcome || 'Sin intentos todavía'} /><Info label="Código HTTP" value={job.latest_attempt_http_status ? String(job.latest_attempt_http_status) : '—'} />{(job.last_error || job.latest_attempt_error) && <div className="automation-error"><AlertCircle />{job.last_error || job.latest_attempt_error}</div>}</section>
+      <section className="automation-products"><h4>Contenido para personalización</h4><small>Segmentación emBlue</small><div className="marketing-primary">Principal: <strong>{marketingCategoryName(job.payload?.primary_marketing_category || marketingSegments[0])}</strong></div><div className="category-tags marketing-tags">{marketingSegments.map((category) => <span key={category}>{marketingCategoryName(category)}</span>)}</div>{categories.length > 0 && <><small>Categorías originales de WooCommerce · solo referencia</small><div className="category-tags">{categories.map((category) => <span key={category}>{category}</span>)}</div></>}{products.length ? products.map((product, index) => <div className="automation-product" key={`${product.product_id}-${product.variation_id}-${index}`}><span><strong>{product.name}</strong><small>{product.sku ? `SKU ${product.sku} · ` : ''}{product.categories?.map((category) => category.name).join(', ') || 'Sin categoría'}</small></span><b>x{product.quantity}</b></div>) : <small>No se guardaron productos en este evento.</small>}</section>
+      <section><h4>Diagnóstico</h4><Info label="Intentos" value={String(job.attempts)} /><Info label="Próximo reintento" value={shortDate(job.next_attempt_at || undefined)} /><Info label="Último intento" value={shortDate(job.latest_attempt_at || undefined)} /><Info label="Resultado" value={job.latest_attempt_outcome || 'Sin intentos todavía'} /><Info label="Código HTTP" value={job.latest_attempt_http_status ? String(job.latest_attempt_http_status) : '—'} />{(job.last_error || job.latest_attempt_error) && <div className="automation-error"><AlertCircle />{job.last_error || job.latest_attempt_error}</div>}</section>
     </div>
   </div>;
 }
 
-function AutomationState({ job, emblueEnabled }: { job: AutomationJob; emblueEnabled: boolean }) {
-  const labels: Record<AutomationStatus, string> = { scheduled: 'Programado', ready: emblueEnabled ? 'Listo' : 'Listo · prueba', processing: 'Enviando', sent: 'Enviado', cancelled: 'Cancelado', skipped: 'Omitido', failed: 'Fallido' };
+function AutomationState({ job, deliveryEnabled }: { job: AutomationJob; deliveryEnabled: boolean }) {
+  const labels: Record<AutomationStatus, string> = { scheduled: 'Programado', ready: deliveryEnabled ? 'Listo' : 'Listo · prueba', processing: 'Enviando', sent: 'Enviado', cancelled: 'Cancelado', skipped: 'Omitido', failed: 'Fallido' };
   return <span className={`automation-state state-${job.status}`}>{labels[job.status]}</span>;
+}
+function automationDeliveryEnabled(type: AutomationType, data: AutomationJobsResponse) {
+  return type === 'post_purchase' ? Boolean(data.mode.connectors?.postPurchase)
+    : type === 'cross_sell' ? Boolean(data.mode.connectors?.crossSell) : Boolean(data.mode.connectors?.winBack);
 }
 function AutomationConsent({ job }: { job: AutomationJob }) {
   const inherited = !job.order_marketing_opt_in && job.current_marketing_opt_in;
@@ -419,6 +426,7 @@ function AutomationConsent({ job }: { job: AutomationJob }) {
 }
 function automationTypeName(type: AutomationType) { return type === 'post_purchase' ? 'Postcompra' : type === 'cross_sell' ? 'Cross-sell' : 'Win-back'; }
 function automationDelayLabel(type: AutomationType) { return type === 'post_purchase' ? '10 días' : type === 'cross_sell' ? '35 días sin recompra' : '90 días sin recompra'; }
+function marketingCategoryName(value: string) { return value === 'granolas' ? 'Granolas' : value === 'barras' ? 'Barras' : 'Sin categoría clara'; }
 function automationRemaining(job: AutomationJob) {
   if (job.status === 'sent') return 'Enviado';
   if (job.status === 'cancelled') return 'Cancelado';

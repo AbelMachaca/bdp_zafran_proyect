@@ -9,6 +9,11 @@ export const config = {
   wooWebhookSecret: process.env.WC_WEBHOOK_SECRET || '',
   automationsActiveFrom: validDate(process.env.AUTOMATIONS_ACTIVE_FROM),
   emblueEnabled: process.env.EMBLUE_ENABLED === 'true',
+  embluePostPurchaseEnabled: process.env.EMBLUE_POST_PURCHASE_ENABLED === 'true',
+  embluePostPurchaseUrl: process.env.EMBLUE_POST_PURCHASE_URL || '',
+  embluePostPurchaseToken: process.env.EMBLUE_POST_PURCHASE_TOKEN || '',
+  emblueTimeoutMs: positiveNumber(process.env.EMBLUE_TIMEOUT_MS, 12_000),
+  emblueMaxAttempts: positiveNumber(process.env.EMBLUE_MAX_ATTEMPTS, 5),
 };
 
 export const credentialsConfigured = () =>
@@ -18,4 +23,9 @@ function validDate(value?: string) {
   if (!value) return null;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function positiveNumber(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }

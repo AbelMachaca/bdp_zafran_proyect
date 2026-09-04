@@ -198,6 +198,130 @@ const migrations: Migration[] = [
       WHERE automation_jobs.status IN ('cancelled', 'skipped', 'failed');
     `,
   },
+  {
+    version: 3,
+    name: 'emblue_marketing_categories',
+    sql: `
+      WITH classified AS (
+        SELECT j.id,
+          COALESCE(BOOL_OR(
+            LOWER(i.name) LIKE '%granola%'
+            OR EXISTS (SELECT 1 FROM UNNEST(i.category_names) category WHERE LOWER(category) LIKE '%granola%')
+          ), FALSE) AS bought_granolas,
+          COALESCE(BOOL_OR(
+            LOWER(i.name) LIKE '%barra%'
+            OR EXISTS (SELECT 1 FROM UNNEST(i.category_names) category WHERE LOWER(category) LIKE '%barra%')
+          ), FALSE) AS bought_barras
+        FROM automation_jobs j
+        LEFT JOIN automation_order_items i ON i.woo_order_id = j.trigger_order_id
+        GROUP BY j.id
+      ), normalized AS (
+        SELECT id, bought_granolas, bought_barras,
+          CASE
+            WHEN bought_granolas AND bought_barras THEN '["granolas", "barras"]'::jsonb
+            WHEN bought_granolas THEN '["granolas"]'::jsonb
+            WHEN bought_barras THEN '["barras"]'::jsonb
+            ELSE '["sin_categoria_clara"]'::jsonb
+          END AS marketing_categories,
+          CASE
+            WHEN bought_granolas AND bought_barras THEN 'mixta'
+            WHEN bought_granolas THEN 'granolas'
+            WHEN bought_barras THEN 'barras'
+            ELSE 'sin_categoria_clara'
+          END AS primary_marketing_category
+        FROM classified
+      )
+      UPDATE automation_jobs j
+      SET payload = j.payload || JSONB_BUILD_OBJECT(
+        'marketing_categories', normalized.marketing_categories,
+        'primary_marketing_category', normalized.primary_marketing_category,
+        'bought_granolas', normalized.bought_granolas,
+        'bought_barras', normalized.bought_barras
+      ), updated_at = NOW()
+      FROM normalized
+      WHERE j.id = normalized.id;
+    `,
+  },
+  {
+    version: 4,
+    name: 'primary_marketing_category_by_value',
+    sql: `
+      WITH item_classes AS (
+        SELECT j.id, i.woo_line_item_id,
+          COALESCE(i.total, 0) AS amount,
+          COALESCE(i.quantity, 0) AS quantity,
+          COALESCE(
+            LOWER(i.name) LIKE '%granola%'
+            OR EXISTS (SELECT 1 FROM UNNEST(i.category_names) category WHERE LOWER(category) LIKE '%granola%'),
+            FALSE
+          ) AS is_granola,
+          COALESCE(
+            LOWER(i.name) LIKE '%barra%'
+            OR EXISTS (SELECT 1 FROM UNNEST(i.category_names) category WHERE LOWER(category) LIKE '%barra%'),
+            FALSE
+          ) AS is_barra
+        FROM automation_jobs j
+        LEFT JOIN automation_order_items i ON i.woo_order_id = j.trigger_order_id
+      ), scores AS (
+        SELECT id,
+          COALESCE(BOOL_OR(is_granola), FALSE) AS bought_granolas,
+          COALESCE(BOOL_OR(is_barra), FALSE) AS bought_barras,
+          COALESCE(SUM(amount) FILTER (WHERE is_granola), 0) AS granolas_amount,
+          COALESCE(SUM(amount) FILTER (WHERE is_barra), 0) AS barras_amount,
+          COALESCE(SUM(quantity) FILTER (WHERE is_granola), 0) AS granolas_quantity,
+          COALESCE(SUM(quantity) FILTER (WHERE is_barra), 0) AS barras_quantity,
+          MIN(woo_line_item_id) FILTER (WHERE is_granola) AS first_granola,
+          MIN(woo_line_item_id) FILTER (WHERE is_barra) AS first_barra
+        FROM item_classes GROUP BY id
+      ), normalized AS (
+        SELECT *,
+          CASE
+            WHEN bought_granolas AND bought_barras THEN '["granolas", "barras"]'::jsonb
+            WHEN bought_granolas THEN '["granolas"]'::jsonb
+            WHEN bought_barras THEN '["barras"]'::jsonb
+            ELSE '["sin_categoria_clara"]'::jsonb
+          END AS marketing_categories,
+          CASE
+            WHEN NOT bought_granolas AND NOT bought_barras THEN 'sin_categoria_clara'
+            WHEN bought_granolas AND NOT bought_barras THEN 'granolas'
+            WHEN bought_barras AND NOT bought_granolas THEN 'barras'
+            WHEN granolas_amount > barras_amount THEN 'granolas'
+            WHEN barras_amount > granolas_amount THEN 'barras'
+            WHEN granolas_quantity > barras_quantity THEN 'granolas'
+            WHEN barras_quantity > granolas_quantity THEN 'barras'
+            WHEN COALESCE(first_granola, 9223372036854775807) <= COALESCE(first_barra, 9223372036854775807) THEN 'granolas'
+            ELSE 'barras'
+          END AS primary_marketing_category
+        FROM scores
+      )
+      UPDATE automation_jobs j
+      SET payload = j.payload || JSONB_BUILD_OBJECT(
+        'marketing_categories', normalized.marketing_categories,
+        'primary_marketing_category', normalized.primary_marketing_category,
+        'marketing_category_amounts', JSONB_BUILD_OBJECT(
+          'granolas', normalized.granolas_amount, 'barras', normalized.barras_amount
+        ),
+        'marketing_category_quantities', JSONB_BUILD_OBJECT(
+          'granolas', normalized.granolas_quantity, 'barras', normalized.barras_quantity
+        ),
+        'bought_granolas', normalized.bought_granolas,
+        'bought_barras', normalized.bought_barras
+      ), updated_at = NOW()
+      FROM normalized
+      WHERE j.id = normalized.id;
+    `,
+  },
+  {
+    version: 5,
+    name: 'automation_delivery_retries',
+    sql: `
+      ALTER TABLE automation_jobs
+        ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ;
+
+      CREATE INDEX IF NOT EXISTS automation_jobs_delivery_idx
+        ON automation_jobs (automation_type, status, next_attempt_at, due_at);
+    `,
+  },
 ];
 
 export async function runMigrations() {

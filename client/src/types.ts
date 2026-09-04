@@ -9,7 +9,7 @@ export type AutomationProduct = {
   categories?: Array<{ id?: number; name: string }>;
 };
 export type AutomationJob = {
-  id: string; automation_type: AutomationType; trigger_order_id: string; due_at: string; status: AutomationStatus;
+  id: string; automation_type: AutomationType; trigger_order_id: string; due_at: string; next_attempt_at?: string | null; status: AutomationStatus;
   attempts: number; last_error?: string | null; created_at: string; updated_at: string; sent_at?: string | null;
   cancelled_at?: string | null; remaining_seconds: number | string; email: string; first_name?: string; last_name?: string;
   phone?: string; current_marketing_opt_in: boolean; current_consent_source?: string; current_marketing_opt_in_at?: string;
@@ -20,6 +20,11 @@ export type AutomationJob = {
   payload?: {
     order_id?: number; order_number?: string; currency?: string; total?: string;
     products?: AutomationProduct[]; categories?: string[];
+    marketing_categories?: Array<'granolas' | 'barras' | 'sin_categoria_clara'>;
+    primary_marketing_category?: 'granolas' | 'barras' | 'sin_categoria_clara';
+    marketing_category_amounts?: { granolas: number; barras: number };
+    marketing_category_quantities?: { granolas: number; barras: number };
+    bought_granolas?: boolean; bought_barras?: boolean;
   };
 };
 export type AutomationJobsResponse = {
@@ -28,7 +33,10 @@ export type AutomationJobsResponse = {
     post_purchase: number; cross_sell: number; win_back: number;
   };
   data: AutomationJob[]; total: number; page: number; perPage: number;
-  mode: { enabled: boolean; emblueEnabled: boolean };
+  mode: {
+    enabled: boolean; emblueEnabled: boolean;
+    connectors?: { postPurchase: boolean; crossSell: boolean; winBack: boolean };
+  };
 };
 export type Dashboard = {
   orders: number; validOrders: number; paidOrders: number; revenue: number; averageTicket: number; discounts: number;
