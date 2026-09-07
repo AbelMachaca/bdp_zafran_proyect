@@ -70,6 +70,15 @@ test('rechaza CSRF, credenciales incorrectas y configuración ausente o insegura
   }
 });
 
+test('acepta contraseñas de 9 caracteres y rechaza las de 8', async (t) => {
+  const accepted = await setup(t, { password: 'Abc123!xy' });
+  assert.equal((await (await accepted.request('/auth/session')).json()).configured, true);
+  assert.equal((await accepted.login({ username: 'operator', password: 'Abc123!xy' })).status, 200);
+  const rejected = await setup(t, { password: 'Abc123!x' });
+  assert.equal((await (await rejected.request('/auth/session')).json()).configured, false);
+  assert.equal((await rejected.login({ username: 'operator', password: 'Abc123!x' })).status, 503);
+});
+
 test('conserva la sesión durante 90 días sin actividad y no extiende su vencimiento', async (t) => {
   const { request, login, advance } = await setup(t);
   const response = await login();

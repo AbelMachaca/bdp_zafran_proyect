@@ -7,7 +7,7 @@ La interfaz incluye modos claro y oscuro. La primera visita respeta la preferenc
 ## Configuración
 
 1. Copiá `.env.example` como `server/.env`.
-2. Completá `WC_CONSUMER_KEY`, `WC_CONSUMER_SECRET`, `PANEL_USERNAME` y `PANEL_PASSWORD` en `server/.env`. La contraseña del panel debe tener al menos 16 caracteres.
+2. Completá `WC_CONSUMER_KEY`, `WC_CONSUMER_SECRET`, `PANEL_USERNAME` y `PANEL_PASSWORD` en `server/.env`. La contraseña del panel debe tener al menos 9 caracteres.
 3. Ejecutá `npm install`.
 4. Ejecutá `npm run dev`.
 5. Abrí `http://localhost:5173`.
@@ -187,11 +187,11 @@ En **Easypanel → aplicación backend → Variables de entorno**, configurá:
 
 ```env
 PANEL_USERNAME=tu_usuario
-PANEL_PASSWORD=una_contraseña_unica_aleatoria_de_al_menos_16_caracteres
+PANEL_PASSWORD=una_contraseña_unica_aleatoria_de_al_menos_9_caracteres
 CLIENT_ORIGIN=https://dominio-publico-del-frontend
 ```
 
-Elegí tu propia contraseña; no uses el ejemplo. El usuario distingue mayúsculas y minúsculas. La contraseña admite entre 16 y 1024 caracteres. `CLIENT_ORIGIN` debe coincidir con el origen del navegador (protocolo, dominio y puerto). En producción se exige HTTPS. No agregues estas credenciales a variables `VITE_*`, al frontend ni a Git.
+Elegí tu propia contraseña; no uses el ejemplo. El usuario distingue mayúsculas y minúsculas. La contraseña admite entre 9 y 1024 caracteres. `CLIENT_ORIGIN` debe coincidir con el origen del navegador (protocolo, dominio y puerto). En producción se exige HTTPS. No agregues estas credenciales a variables `VITE_*`, al frontend ni a Git.
 
 Desplegá backend y frontend. Sin credenciales válidas o con un origen HTTP en producción, el backend mantiene cerrado el acceso. Localmente usá `CLIENT_ORIGIN=http://localhost:5173` y entrá por esa misma dirección.
 

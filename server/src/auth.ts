@@ -13,7 +13,7 @@ export function createAuth(options: AuthOptions) {
   try { origin = new URL(options.origin).origin; } catch { /* Fail closed. */ }
   const secure = origin.startsWith('https://') || options.production;
   const configured = Boolean(origin && options.username.trim() && options.username.length <= 100
-    && options.password.length >= 16 && options.password.length <= 1024
+    && options.password.length >= 9 && options.password.length <= 1024
     && (!options.production || (origin.startsWith('https://') && options.sessions)));
   const usernameHash = digest(options.username);
   const passwordHash = digest(options.password);
