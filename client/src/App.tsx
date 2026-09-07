@@ -7,6 +7,7 @@ import {
   Truck, UserRound, UsersRound, WalletCards, Workflow, Mail, Clock, ShieldCheck, CheckCircle2, X, Moon, Sun, Send,
 } from 'lucide-react';
 import { api, money, shortDate } from './api';
+import { AuthGate } from './AuthGate';
 import type { Aggregate, AutomationJob, AutomationJobsResponse, AutomationStatus, AutomationType, CapabilityResponse, Dashboard, EmailMarketingReport, Health, MarketingMonth, Meta, Order } from './types';
 
 type View = 'dashboard' | 'orders' | 'automations' | 'email' | 'attribution' | 'capabilities' | 'explorer';
@@ -17,6 +18,10 @@ const defaultStatuses = ['processing', 'completed'];
 const monthNames = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
 export default function App() {
+  return <AuthGate>{(logout) => <Panel onLogout={logout} />}</AuthGate>;
+}
+
+function Panel({ onLogout }: { onLogout: () => void }) {
   const [view, setView] = useState<View>('dashboard');
   const [health, setHealth] = useState<Health | null>(null);
   const [selectedOrder, setSelectedOrder] = useState<number | null>(null);
@@ -27,7 +32,7 @@ export default function App() {
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
 
-  useEffect(() => { api<Health>('/health').then(setHealth).catch(() => setHealth(null)); }, []);
+  useEffect(() => { api<Health>('/status').then(setHealth).catch(() => setHealth(null)); }, []);
   useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('zafran-theme', theme); }, [theme]);
   const navigate = (next: View) => { setView(next); setSelectedOrder(null); setMobileOpen(false); };
   const openOrder = (id: number) => { setSelectedOrder(id); setView('orders'); setMobileOpen(false); };
@@ -58,6 +63,7 @@ export default function App() {
           <div className="store-pill"><span className="pulse" /> zafran.com.ar <ExternalLink size={13} /></div>
           <button className="theme-toggle" onClick={() => setTheme((value) => value === 'light' ? 'dark' : 'light')} aria-label={theme === 'light' ? 'Activar modo oscuro' : 'Activar modo claro'} title={theme === 'light' ? 'Activar modo oscuro' : 'Activar modo claro'}>{theme === 'light' ? <Moon /> : <Sun />}<span>{theme === 'light' ? 'Oscuro' : 'Claro'}</span></button>
           <div className="readonly"><Eye size={15} /> Modo lectura</div>
+          <button className="theme-toggle logout-button" onClick={onLogout}><LockKeyhole size={15} /> Cerrar sesión</button>
         </header>
         <GlobalLoading />
         {!health?.configured && health && <SetupBanner />}

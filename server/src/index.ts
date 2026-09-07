@@ -3,12 +3,14 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { z } from 'zod';
 import { config, credentialsConfigured } from './config.js';
+import { createAuth } from './auth.js';
+import { createPostgresSessionStore } from './auth-sessions.js';
 import { createOrderCache } from './order-cache.js';
 import { matchedMarketingMonths } from './marketing-comparison.js';
 import { WooError, getAll, publicApiIndex, wooGet } from './woocommerce.js';
 import { capabilities, explorerResources } from './capabilities.js';
 import { orderDimensions, summarizeEmailMarketing, summarizeOrders, type AnalyticsOrder } from './analytics.js';
-import { databaseConfigured } from './database.js';
+import { databaseConfigured, pool } from './database.js';
 import { runMigrations } from './migrations.js';
 import { automationJobsHandler, automationStatusHandler, postPurchaseTestHandler, startAutomationWorker } from './automations.js';
 import { wooOrderWebhookHandler } from './webhooks.js';
@@ -19,6 +21,14 @@ app.use(helmet());
 app.use(cors({ origin: config.clientOrigin }));
 app.post('/webhooks/woocommerce/orders', express.raw({ type: '*/*', limit: '2mb' }), wooOrderWebhookHandler);
 app.use(express.json({ limit: '100kb' }));
+app.get('/api/health', (_req, res) => { res.set('Cache-Control', 'no-store').json({ ok: true }); });
+const auth = createAuth({
+  username: config.panelUsername, password: config.panelPassword, origin: config.clientOrigin,
+  production: process.env.NODE_ENV === 'production',
+  sessions: databaseConfigured() ? createPostgresSessionStore(pool) : undefined,
+});
+app.use('/api/auth', auth.router);
+app.use('/api', auth.requireSession);
 
 const listQuery = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -30,7 +40,7 @@ const listQuery = z.object({
   sku: z.string().max(100).optional(), stock_status: z.enum(['instock', 'outofstock', 'onbackorder']).optional(),
 });
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/status', (_req, res) => {
   res.json({
     ok: true, configured: credentialsConfigured(), databaseConfigured: databaseConfigured(),
     automationsConfigured: Boolean(config.wooWebhookSecret && config.automationsActiveFrom),

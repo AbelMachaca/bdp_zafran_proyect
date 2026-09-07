@@ -6,6 +6,8 @@ export const config = {
   secret: process.env.WC_CONSUMER_SECRET || '',
   port: Number(process.env.PORT || 3001),
   clientOrigin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
+  panelUsername: process.env.PANEL_USERNAME || '',
+  panelPassword: process.env.PANEL_PASSWORD || '',
   wooWebhookSecret: process.env.WC_WEBHOOK_SECRET || '',
   automationsActiveFrom: validDate(process.env.AUTOMATIONS_ACTIVE_FROM),
   emblueEnabled: process.env.EMBLUE_ENABLED === 'true',

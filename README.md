@@ -7,7 +7,7 @@ La interfaz incluye modos claro y oscuro. La primera visita respeta la preferenc
 ## Configuración
 
 1. Copiá `.env.example` como `server/.env`.
-2. Completá `WC_CONSUMER_KEY` y `WC_CONSUMER_SECRET` en `server/.env`.
+2. Completá `WC_CONSUMER_KEY`, `WC_CONSUMER_SECRET`, `PANEL_USERNAME` y `PANEL_PASSWORD` en `server/.env`. La contraseña del panel debe tener al menos 16 caracteres.
 3. Ejecutá `npm install`.
 4. Ejecutá `npm run dev`.
 5. Abrí `http://localhost:5173`.
@@ -23,7 +23,7 @@ Las credenciales solo son leídas por el backend. El frontend nunca las recibe.
 
 ## Alcance
 
-La aplicación no contiene rutas de escritura. El explorador usa una lista cerrada de recursos GET para impedir mutaciones accidentales.
+El explorador consulta WooCommerce mediante una lista cerrada de recursos GET. El panel requiere sesión; las rutas de login/logout, webhooks y automatizaciones tienen sus propios controles.
 
 ## Definiciones del dashboard
 
@@ -180,3 +180,28 @@ POST /api/automations/test/post-purchase
 - **Actualizar**, **Analizar** y **Actualizar reporte** envían `refresh=true` para consultar nuevamente WooCommerce e invalidar rangos guardados superpuestos. No hay sincronización automática en segundo plano.
 - Las consultas usan solo los campos necesarios para los informes, un máximo global de cinco solicitudes simultáneas y un tiempo máximo de 30 segundos por solicitud. Los informes recorren todas las páginas y ya no se truncan en 5.000 pedidos. La primera consulta de un período amplio sigue dependiendo de la velocidad de la tienda.
 - **Mismo día y hora** recorta ambos meses al día y hora actuales de Argentina y muestra los dos rangos exactos. También puede usarse sobre meses históricos; si un mes tiene menos días, ambos se limitan al último día común. Los gráficos y tablas anuales mantienen sus meses completos. **Mes anterior completo** conserva el mes analizado y lo compara con todo el mes previo, incluso diciembre del año anterior al analizar enero.
+
+## Acceso privado al panel
+
+En **Easypanel → aplicación backend → Variables de entorno**, configurá:
+
+```env
+PANEL_USERNAME=tu_usuario
+PANEL_PASSWORD=una_contraseña_unica_aleatoria_de_al_menos_16_caracteres
+CLIENT_ORIGIN=https://dominio-publico-del-frontend
+```
+
+Elegí tu propia contraseña; no uses el ejemplo. El usuario distingue mayúsculas y minúsculas. La contraseña admite entre 16 y 1024 caracteres. `CLIENT_ORIGIN` debe coincidir con el origen del navegador (protocolo, dominio y puerto). En producción se exige HTTPS. No agregues estas credenciales a variables `VITE_*`, al frontend ni a Git.
+
+Desplegá backend y frontend. Sin credenciales válidas o con un origen HTTP en producción, el backend mantiene cerrado el acceso. Localmente usá `CLIENT_ORIGIN=http://localhost:5173` y entrá por esa misma dirección.
+
+- Se permite una sola cuenta administrada por variables de entorno. Después de 10 intentos fallidos en una ventana de 15 minutos, se bloquean nuevos ingresos durante 15 minutos desde el décimo fallo. El límite es compartido por toda la cuenta, incluso si se cambian el usuario introducido o los headers de IP. Esto también puede bloquear temporalmente al usuario legítimo; las sesiones ya iniciadas continúan funcionando.
+- Las sesiones utilizan tokens aleatorios de 256 bits; el servidor conserva solo su hash. La cookie es `HttpOnly`, `SameSite=Strict`, sin dominio compartido y con `Secure` y prefijo `__Host-` sobre HTTPS. No se guardan credenciales ni tokens en localStorage.
+- La sesión se conserva durante **90 días desde el ingreso**, incluso sin actividad y al cerrar y volver a abrir el navegador. La actividad no renueva el plazo. **Cerrar sesión** revoca el token en el servidor. Cambiar el usuario o la contraseña invalida los tokens existentes al redesplegar. Borrar cookies o usar navegación privada puede requerir ingresar antes.
+- Las solicitudes que modifican estado requieren el origen exacto del frontend, además de la cookie. Login usa JSON y mensajes genéricos para usuario o contraseña incorrectos. Las respuestas de autenticación y de la API llevan `Cache-Control: no-store`.
+- Todas las rutas `/api` de datos y automatizaciones requieren sesión. `/api/health` permanece público y solo devuelve `{ "ok": true }` para el healthcheck. La configuración del panel se consulta en `/api/status`, con sesión. Los endpoints `/api/auth/session`, `/api/auth/login` y `/api/auth/logout` permiten administrar la sesión.
+- `/webhooks/woocommerce/orders` mantiene su firma HMAC de WooCommerce y no requiere la cookie del panel. La prueba de Postcompra exige tanto la sesión como `X-Automation-Test-Secret`.
+
+**Almacenamiento y réplicas:** las sesiones se guardan en PostgreSQL (tabla `panel_sessions`, migración 7 automática al iniciar). Se conserva únicamente un hash HMAC del token vinculado a las credenciales, junto con su vencimiento; nunca la contraseña ni el token original. Con la misma base y credenciales, los reinicios y redespliegues conservan las sesiones. En producción PostgreSQL es obligatorio: sin configuración de base de datos, el acceso queda cerrado. Usá la conexión `DATABASE_URL` o `DB_*` ya configurada en Easypanel. En desarrollo sin PostgreSQL se usa memoria y los reinicios borran las sesiones. El contador de intentos sigue en memoria y se reinicia con el servicio; mantené **una sola réplica del backend** hasta trasladar también ese contador a un almacén compartido.
+
+Los controles de cookies, sesiones y limitación de intentos siguen las recomendaciones de [sesiones de OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html) y [autenticación de OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html).

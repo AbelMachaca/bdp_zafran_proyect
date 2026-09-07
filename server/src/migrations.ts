@@ -350,6 +350,18 @@ const migrations: Migration[] = [
       );
     `,
   },
+  {
+    version: 7,
+    name: 'persistent_panel_sessions',
+    sql: `
+      CREATE TABLE panel_sessions (
+        token_hash TEXT PRIMARY KEY,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX panel_sessions_expires_idx ON panel_sessions (expires_at);
+    `,
+  },
 ];
 
 export async function runMigrations() {
