@@ -362,7 +362,8 @@ function percentageChange(current: number, previous: number) { return previous ?
 
 function AutomationsView({ configured, onSelectOrder }: { configured: boolean; onSelectOrder: (id: number) => void }) {
   const [data, setData] = useState<AutomationJobsResponse | null>(null);
-  const [page, setPage] = useState(1); const [status, setStatus] = useState<AutomationStatus | ''>('');
+  type AutomationFilterStatus = AutomationStatus | 'problems' | '';
+  const [page, setPage] = useState(1); const [status, setStatus] = useState<AutomationFilterStatus>('');
   const [type, setType] = useState<AutomationType | ''>(''); const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null); const [loading, setLoading] = useState(false);
   const [error, setError] = useState(''); const [showPostPurchaseTest, setShowPostPurchaseTest] = useState(false); const [, setClock] = useState(Date.now());
@@ -379,6 +380,11 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
   useEffect(load, [configured, page, status, type]);
   useEffect(() => { const timer = window.setInterval(() => setClock(Date.now()), 60_000); return () => window.clearInterval(timer); }, []);
   const refreshFromFirstPage = () => page === 1 ? load() : setPage(1);
+  const filterFromMetric = (nextStatus: Exclude<AutomationFilterStatus, ''>) => {
+    setStatus((current) => current === nextStatus ? '' : nextStatus);
+    setType(''); setSearch(''); setPage(1); setExpanded(null);
+    window.setTimeout(() => document.getElementById('automation-list')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+  };
   const summary = data?.summary;
   const postPurchaseConnected = Boolean(data?.mode.connectors?.postPurchase);
   const anyDeliveryConnected = Boolean(data?.mode.connectors && Object.values(data.mode.connectors).some(Boolean));
@@ -390,16 +396,16 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
       <span>{data.mode.enabled ? 'Programación activa' : 'Programación inactiva'}</span>
     </div>}
     <div className="metrics-grid automation-metrics">
-      <Metric label="Programados" value={summary?.scheduled ?? '—'} note="Esperando su fecha prevista" icon={<Clock />} accent="forest" />
-      <Metric label="Listos" value={summary?.ready ?? '—'} note="Fecha alcanzada; pendientes de emBlue" icon={<Mail />} accent="amber" />
-      <Metric label="Enviados" value={summary?.sent ?? '—'} note="Entrega registrada correctamente" icon={<CheckCircle2 />} accent="blue" />
-      <Metric label="Vencidos sin enviar" value={summary?.expired ?? '—'} note="Históricos protegidos; nunca se enviarán" icon={<Clock />} accent="amber" />
-      <Metric label="Cancelados o con problema" value={summary ? summary.cancelled + summary.problems : '—'} note="Cancelados, omitidos o fallidos" icon={<AlertCircle />} accent="plum" />
+      <Metric label="Programados" value={summary?.scheduled ?? '—'} note="Esperando su fecha prevista" icon={<Clock />} accent="forest" onClick={() => filterFromMetric('scheduled')} active={status === 'scheduled'} />
+      <Metric label="Listos" value={summary?.ready ?? '—'} note="Fecha alcanzada; pendientes de emBlue" icon={<Mail />} accent="amber" onClick={() => filterFromMetric('ready')} active={status === 'ready'} />
+      <Metric label="Enviados" value={summary?.sent ?? '—'} note="Entrega registrada correctamente" icon={<CheckCircle2 />} accent="blue" onClick={() => filterFromMetric('sent')} active={status === 'sent'} />
+      <Metric label="Vencidos sin enviar" value={summary?.expired ?? '—'} note="Históricos protegidos; nunca se enviarán" icon={<Clock />} accent="amber" onClick={() => filterFromMetric('expired')} active={status === 'expired'} />
+      <Metric label="Cancelados o con problema" value={summary ? summary.cancelled + summary.problems : '—'} note="Cancelados, omitidos o fallidos" icon={<AlertCircle />} accent="plum" onClick={() => filterFromMetric('problems')} active={status === 'problems'} />
     </div>
-    <div className="order-toolbar automation-toolbar">
+    <div className="order-toolbar automation-toolbar" id="automation-list">
       <div className="search-box"><Search /><input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && refreshFromFirstPage()} placeholder="Correo, cliente o pedido…" /></div>
       <div className="select-wrap"><select value={type} onChange={(e) => { setType(e.target.value as AutomationType | ''); setPage(1); }}><option value="">Todas las automatizaciones</option><option value="post_purchase">Postcompra</option><option value="cross_sell">Cross-sell</option><option value="win_back">Win-back</option></select><ChevronDown /></div>
-      <div className="select-wrap"><select value={status} onChange={(e) => { setStatus(e.target.value as AutomationStatus | ''); setPage(1); }}><option value="">Todos los estados</option><option value="scheduled">Programado</option><option value="ready">Listo</option><option value="processing">Enviando</option><option value="sent">Enviado</option><option value="expired">Vencido · no enviado</option><option value="cancelled">Cancelado</option><option value="skipped">Omitido</option><option value="failed">Fallido</option></select><ChevronDown /></div>
+      <div className="select-wrap"><select value={status} onChange={(e) => { setStatus(e.target.value as AutomationFilterStatus); setPage(1); }}><option value="">Todos los estados</option><option value="scheduled">Programado</option><option value="ready">Listo</option><option value="processing">Enviando</option><option value="sent">Enviado</option><option value="expired">Vencido · no enviado</option><option value="problems">Cancelados o con problema</option><option value="cancelled">Cancelado</option><option value="skipped">Omitido</option><option value="failed">Fallido</option></select><ChevronDown /></div>
       <button className="test-launch" onClick={() => setShowPostPurchaseTest(true)}><Send /> Probar Postcompra</button>
       <button className="primary" onClick={refreshFromFirstPage} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Actualizar</button>
     </div>
@@ -549,7 +555,12 @@ function ExplorerView({ configured }: { configured: boolean }) {
 
 function PageTitle({ eyebrow, title, subtitle }: { eyebrow: string; title: string; subtitle: string }) { return <div className="page-title"><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{subtitle}</p></div>; }
 function PanelHead({ title, subtitle }: { title: string; subtitle?: string }) { return <div className="panel-head"><div><h3>{title}</h3>{subtitle && <p>{subtitle}</p>}</div></div>; }
-function Metric({ label, value, note, icon, accent, delta }: { label: string; value: ReactNode; note: string; icon: ReactNode; accent: string; delta?: number | null }) { return <article className={`metric ${accent}`}><div className="metric-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{note}</small>{delta !== undefined && <DeltaBadge value={delta} />}</article>; }
+function Metric({ label, value, note, icon, accent, delta, onClick, active = false }: { label: string; value: ReactNode; note: string; icon: ReactNode; accent: string; delta?: number | null; onClick?: () => void; active?: boolean }) {
+  const content = <><div className="metric-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{note}</small>{delta !== undefined && <DeltaBadge value={delta} />}{onClick && <em className="metric-action">{active ? 'Filtro activo · pulsá para quitar' : 'Ver en el listado'} <ChevronRight /></em>}</>;
+  return onClick
+    ? <button type="button" className={`metric ${accent} clickable ${active ? 'active' : ''}`} onClick={onClick} aria-pressed={active}>{content}</button>
+    : <article className={`metric ${accent}`}>{content}</article>;
+}
 function DeltaBadge({ value }: { value: number | null }) { if (value === null) return <span className="delta-badge neutral">Sin base comparable</span>; const positive = value >= 0; return <span className={`delta-badge ${positive ? 'positive' : 'negative'}`}>{positive ? <TrendingUp /> : <TrendingDown />}{positive ? '+' : ''}{value}% vs. período anterior</span>; }
 function Delta({ label, value, baseline, delta, moneyValue }: { label: string; value: number; baseline: number; delta: number | null; moneyValue?: boolean }) { const format = (v: number) => moneyValue ? money(v) : new Intl.NumberFormat('es-AR').format(Math.round(v)); return <div className="comparison-stat"><span>{label}</span><strong>{format(value)}</strong><small>Anterior: {format(baseline)}</small><DeltaBadge value={delta} /></div>; }
 

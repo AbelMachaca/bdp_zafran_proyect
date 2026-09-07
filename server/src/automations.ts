@@ -640,13 +640,14 @@ export async function automationJobsHandler(req: Request, res: Response, next: N
     const query = z.object({
       page: z.coerce.number().int().min(1).default(1),
       per_page: z.coerce.number().int().min(1).max(100).default(25),
-      status: optionalQueryValue(z.enum(['scheduled', 'ready', 'processing', 'sent', 'cancelled', 'skipped', 'failed', 'expired'])),
+      status: optionalQueryValue(z.enum(['scheduled', 'ready', 'processing', 'sent', 'cancelled', 'skipped', 'failed', 'expired', 'problems'])),
       type: optionalQueryValue(z.enum(['post_purchase', 'cross_sell', 'win_back'])),
       search: optionalQueryValue(z.string().trim().max(100)),
     }).parse(req.query);
     const parameters: unknown[] = [];
     const filters: string[] = [];
-    if (query.status) { parameters.push(query.status); filters.push(`j.status = $${parameters.length}`); }
+    if (query.status === 'problems') filters.push("j.status IN ('cancelled', 'skipped', 'failed')");
+    else if (query.status) { parameters.push(query.status); filters.push(`j.status = $${parameters.length}`); }
     if (query.type) { parameters.push(query.type); filters.push(`j.automation_type = $${parameters.length}`); }
     if (query.search) {
       parameters.push(`%${query.search}%`);
