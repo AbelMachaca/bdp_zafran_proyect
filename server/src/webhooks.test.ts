@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import test from 'node:test';
-import { automationDueAt, buildEmbluePostPurchasePayload, marketingCategories, marketingCategorySummary, marketingConsent, retainedMarketingConsent } from './automations.js';
+import { automationDueAt, buildEmblueCrossSellPayload, buildEmbluePostPurchasePayload, marketingCategories, marketingCategorySummary, marketingConsent, retainedMarketingConsent } from './automations.js';
 import { isWooPing, parseWooPayload, validWooSignature } from './webhooks.js';
 
 test('valida la firma HMAC enviada por WooCommerce', () => {
@@ -88,4 +88,19 @@ test('construye el contrato estable de Postcompra para Data Lab', () => {
   assert.deepEqual(payload.products[0], {
     product_id: 12, variation_id: null, name: 'Granola clásica', sku: 'GRA-1', quantity: 2, total: 12000, categories: 'Granolas',
   });
+});
+
+test('construye el contrato estable de Cross-sell para su propio conector', () => {
+  const payload = buildEmblueCrossSellPayload({
+    id: '84', due_at: '2026-10-07T15:00:00.000Z', attempts: 0,
+    contact_id: '9', email: 'cross-sell@example.com', first_name: 'Juan', last_name: 'Prueba', phone: '',
+    marketing_opt_in: true, marketing_opt_in_at: '2026-09-02T15:00:00.000Z',
+    trigger_order_id: '96000', order_number: '96000', order_status: 'processing', currency: 'ARS',
+    order_total: '25000', processing_at: '2026-09-02T15:00:00.000Z',
+    payload: { primary_marketing_category: 'barras', marketing_categories: ['barras'], bought_granolas: false, bought_barras: true },
+  });
+  assert.equal(payload.event_id, 'zafran-cross-sell-84');
+  assert.equal(payload.automation_type, 'cross_sell');
+  assert.equal(payload.email, 'cross-sell@example.com');
+  assert.equal(payload.marketing_category, 'barras');
 });

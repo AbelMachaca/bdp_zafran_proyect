@@ -334,11 +334,19 @@ function jobPayload(order: WooAutomationOrder) {
 }
 
 export function buildEmbluePostPurchasePayload(job: EmblueJobRow) {
+  return buildEmbluePayload(job, 'post_purchase');
+}
+
+export function buildEmblueCrossSellPayload(job: EmblueJobRow) {
+  return buildEmbluePayload(job, 'cross_sell');
+}
+
+function buildEmbluePayload(job: EmblueJobRow, automationType: 'post_purchase' | 'cross_sell') {
   const stored = job.payload || {};
   return {
-    event_id: `zafran-post-purchase-${job.id}`,
+    event_id: `zafran-${automationType.replace('_', '-')}-${job.id}`,
     schema_version: 1,
-    automation_type: 'post_purchase',
+    automation_type: automationType,
     email: job.email,
     first_name: job.first_name || '',
     last_name: job.last_name || '',
@@ -418,14 +426,23 @@ export function startAutomationWorker() {
             AND due_at < $1
         `, [config.embluePostPurchaseActiveFrom]);
       }
+      if (config.emblueCrossSellActiveFrom) {
+        await pool.query(`
+          UPDATE automation_jobs SET status = 'expired', expired_at = NOW(), updated_at = NOW(),
+            last_error = 'No enviado: vencido antes de habilitar Cross-sell en emBlue'
+          WHERE automation_type = 'cross_sell' AND status IN ('scheduled', 'ready')
+            AND due_at < $1
+        `, [config.emblueCrossSellActiveFrom]);
+      }
       if (postPurchaseDeliveryEnabled()) await processPostPurchaseJobs();
+      if (crossSellDeliveryEnabled()) await processCrossSellJobs();
       const result = await pool.query(`
         UPDATE automation_jobs SET status = 'ready', updated_at = NOW()
         WHERE status = 'scheduled' AND due_at <= NOW()
           AND (next_attempt_at IS NULL OR next_attempt_at <= NOW())
-          AND NOT (automation_type = 'post_purchase' AND $1)
+          AND NOT ((automation_type = 'post_purchase' AND $1) OR (automation_type = 'cross_sell' AND $2))
         RETURNING id
-      `, [postPurchaseDeliveryEnabled()]);
+      `, [postPurchaseDeliveryEnabled(), crossSellDeliveryEnabled()]);
       if (result.rowCount) console.log(`${result.rowCount} automatización(es) listas en modo prueba.`);
     } catch (error) {
       console.error('No se pudo actualizar la cola de automatizaciones.', error);
@@ -443,11 +460,26 @@ function postPurchaseDeliveryEnabled() {
     && Boolean(config.embluePostPurchaseUrl && config.embluePostPurchaseActiveFrom);
 }
 
+function crossSellDeliveryEnabled() {
+  return config.emblueEnabled && config.emblueCrossSellEnabled
+    && Boolean(config.emblueCrossSellUrl && config.emblueCrossSellActiveFrom);
+}
+
 async function processPostPurchaseJobs() {
   for (let processed = 0; processed < 20; processed += 1) {
     const job = await claimPostPurchaseJob();
     if (!job) return;
     await deliverPostPurchaseJob(job);
+  }
+}
+
+async function processCrossSellJobs() {
+  for (let processed = 0; processed < 20; processed += 1) {
+    const job = await claimCrossSellJob();
+    if (!job) return;
+    await deliverAutomationJob(
+      job, buildEmblueCrossSellPayload(job), config.emblueCrossSellUrl, config.emblueCrossSellToken,
+    );
   }
 }
 
@@ -483,8 +515,59 @@ async function claimPostPurchaseJob() {
   return result.rows[0] || null;
 }
 
+async function claimCrossSellJob() {
+  const result = await pool.query<EmblueJobRow>(`
+    WITH candidate AS (
+      SELECT j.id
+      FROM automation_jobs j
+      JOIN automation_contacts c ON c.id = j.contact_id
+      JOIN automation_orders o ON o.woo_order_id = j.trigger_order_id
+      WHERE j.automation_type = 'cross_sell'
+        AND j.status IN ('scheduled', 'ready')
+        AND j.due_at <= NOW()
+        AND j.due_at >= $1
+        AND (j.next_attempt_at IS NULL OR j.next_attempt_at <= NOW())
+        AND o.status NOT IN ('cancelled', 'failed', 'refunded', 'trash')
+        AND c.email <> ''
+        AND c.marketing_opt_in
+        AND NOT EXISTS (
+          SELECT 1 FROM automation_orders newer
+          WHERE newer.contact_id = j.contact_id
+            AND newer.woo_order_id <> j.trigger_order_id
+            AND newer.status IN ('processing', 'completed')
+            AND newer.processing_at > o.processing_at
+        )
+      ORDER BY COALESCE(j.next_attempt_at, j.due_at), j.id
+      FOR UPDATE OF j SKIP LOCKED LIMIT 1
+    ), claimed AS (
+      UPDATE automation_jobs j SET status = 'processing', locked_at = NOW(), updated_at = NOW()
+      FROM candidate WHERE j.id = candidate.id RETURNING j.*
+    )
+    SELECT claimed.id, claimed.due_at, claimed.attempts, claimed.payload,
+      c.id AS contact_id, c.email, c.first_name, c.last_name, c.phone,
+      c.marketing_opt_in, c.marketing_opt_in_at,
+      o.woo_order_id AS trigger_order_id, o.order_number, o.status AS order_status,
+      o.currency, o.total AS order_total, o.processing_at
+    FROM claimed
+    JOIN automation_contacts c ON c.id = claimed.contact_id
+    JOIN automation_orders o ON o.woo_order_id = claimed.trigger_order_id
+  `, [config.emblueCrossSellActiveFrom]);
+  return result.rows[0] || null;
+}
+
 async function deliverPostPurchaseJob(job: EmblueJobRow) {
-  const delivery = await postToEmblue(buildEmbluePostPurchasePayload(job));
+  await deliverAutomationJob(
+    job, buildEmbluePostPurchasePayload(job), config.embluePostPurchaseUrl, config.embluePostPurchaseToken,
+  );
+}
+
+async function deliverAutomationJob(
+  job: EmblueJobRow,
+  payload: ReturnType<typeof buildEmbluePayload>,
+  url: string,
+  token: string,
+) {
+  const delivery = await postToEmblue(payload, url, token);
   const { httpStatus, responseBody, deliveryError } = delivery;
 
   const attempt = Number(job.attempts) + 1;
@@ -513,14 +596,14 @@ async function deliverPostPurchaseJob(job: EmblueJobRow) {
   }
 }
 
-async function postToEmblue(payload: ReturnType<typeof buildEmbluePostPurchasePayload>) {
+async function postToEmblue(payload: ReturnType<typeof buildEmbluePayload>, url: string, token: string) {
   let httpStatus: number | null = null;
   let responseBody = '';
   let deliveryError = '';
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
-    if (config.embluePostPurchaseToken) headers.Authorization = `Bearer ${config.embluePostPurchaseToken}`;
-    const response = await fetch(config.embluePostPurchaseUrl, {
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(url, {
       method: 'POST', headers, body: JSON.stringify(payload), signal: AbortSignal.timeout(config.emblueTimeoutMs),
     });
     httpStatus = response.status;
@@ -553,12 +636,24 @@ const postPurchaseTestSchema = z.object({
 });
 
 export async function postPurchaseTestHandler(req: Request, res: Response, next: NextFunction) {
+  return automationTestHandler(req, res, next, 'post_purchase');
+}
+
+export async function crossSellTestHandler(req: Request, res: Response, next: NextFunction) {
+  return automationTestHandler(req, res, next, 'cross_sell');
+}
+
+async function automationTestHandler(
+  req: Request, res: Response, next: NextFunction, automationType: 'post_purchase' | 'cross_sell',
+) {
   try {
     if (!config.automationTestSecret) return res.status(503).json({ error: 'Falta configurar AUTOMATION_TEST_SECRET' });
-    if (!config.embluePostPurchaseUrl) return res.status(503).json({ error: 'Falta configurar EMBLUE_POST_PURCHASE_URL' });
+    const url = automationType === 'post_purchase' ? config.embluePostPurchaseUrl : config.emblueCrossSellUrl;
+    const token = automationType === 'post_purchase' ? config.embluePostPurchaseToken : config.emblueCrossSellToken;
+    if (!url) return res.status(503).json({ error: `Falta configurar ${automationType === 'post_purchase' ? 'EMBLUE_POST_PURCHASE_URL' : 'EMBLUE_CROSS_SELL_URL'}` });
     const providedSecret = String(req.header('x-automation-test-secret') || '');
     if (!safeSecretMatch(providedSecret, config.automationTestSecret)) return res.status(401).json({ error: 'Clave de prueba incorrecta' });
-    if (!allowTestRequest(req.ip || 'unknown')) return res.status(429).json({ error: 'Demasiadas pruebas; esperá un minuto' });
+    if (!allowTestRequest(`${req.ip || 'unknown'}:${automationType}`)) return res.status(429).json({ error: 'Demasiadas pruebas; esperá un minuto' });
     const input = postPurchaseTestSchema.parse(req.body);
     const now = new Date();
     const categoryName = input.marketing_category === 'granolas' ? 'Granolas'
@@ -566,7 +661,7 @@ export async function postPurchaseTestHandler(req: Request, res: Response, next:
     const isGranola = input.marketing_category === 'granolas';
     const isBarra = input.marketing_category === 'barras';
     const job: EmblueJobRow = {
-      id: `test-${crypto.randomUUID()}`, due_at: addDays(now, 10), attempts: 0,
+      id: `test-${crypto.randomUUID()}`, due_at: addDays(now, automationType === 'post_purchase' ? 10 : 35), attempts: 0,
       contact_id: 'test', email: input.email, first_name: input.first_name, last_name: input.last_name,
       phone: input.phone, marketing_opt_in: true, marketing_opt_in_at: now,
       trigger_order_id: String(Date.now()), order_number: input.order_number, order_status: 'processing',
@@ -584,14 +679,14 @@ export async function postPurchaseTestHandler(req: Request, res: Response, next:
         }],
       },
     };
-    const payload = buildEmbluePostPurchasePayload(job);
-    const delivery = await postToEmblue(payload);
+    const payload = buildEmbluePayload(job, automationType);
+    const delivery = await postToEmblue(payload, url, token);
     await pool.query(`
       INSERT INTO automation_test_deliveries
         (automation_type, recipient_email, payload, outcome, http_status, response_body, error)
-      VALUES ('post_purchase', $1, $2::jsonb, $3, $4, $5, $6)
+      VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
     `, [
-      input.email, JSON.stringify(payload), delivery.deliveryError ? 'failed' : 'sent', delivery.httpStatus,
+      automationType, input.email, JSON.stringify(payload), delivery.deliveryError ? 'failed' : 'sent', delivery.httpStatus,
       delivery.responseBody || null, delivery.deliveryError || null,
     ]);
     if (delivery.deliveryError) return res.status(502).json({ error: delivery.deliveryError, httpStatus: delivery.httpStatus });
@@ -623,9 +718,11 @@ export async function automationStatusHandler(_req: Request, res: Response, next
     `);
     res.json({
       enabled: Boolean(config.automationsActiveFrom), emblueEnabled: config.emblueEnabled,
-      connectors: { postPurchase: postPurchaseDeliveryEnabled(), crossSell: false, winBack: false },
+      connectors: { postPurchase: postPurchaseDeliveryEnabled(), crossSell: crossSellDeliveryEnabled(), winBack: false },
       testDeliveryConfigured: Boolean(config.embluePostPurchaseUrl && config.automationTestSecret),
+      testCrossSellDeliveryConfigured: Boolean(config.emblueCrossSellUrl && config.automationTestSecret),
       postPurchaseActiveFrom: config.embluePostPurchaseActiveFrom?.toISOString() || null,
+      crossSellActiveFrom: config.emblueCrossSellActiveFrom?.toISOString() || null,
       activeFrom: config.automationsActiveFrom?.toISOString() || null, jobs: counts.rows,
     });
   } catch (error) { next(error); }
@@ -711,9 +808,11 @@ export async function automationJobsHandler(req: Request, res: Response, next: N
       page: query.page, perPage: query.per_page,
       mode: {
         enabled: Boolean(config.automationsActiveFrom), emblueEnabled: config.emblueEnabled,
-        connectors: { postPurchase: postPurchaseDeliveryEnabled(), crossSell: false, winBack: false },
+        connectors: { postPurchase: postPurchaseDeliveryEnabled(), crossSell: crossSellDeliveryEnabled(), winBack: false },
         testDeliveryConfigured: Boolean(config.embluePostPurchaseUrl && config.automationTestSecret),
+        testCrossSellDeliveryConfigured: Boolean(config.emblueCrossSellUrl && config.automationTestSecret),
         postPurchaseActiveFrom: config.embluePostPurchaseActiveFrom?.toISOString() || null,
+        crossSellActiveFrom: config.emblueCrossSellActiveFrom?.toISOString() || null,
       },
     });
   } catch (error) { next(error); }

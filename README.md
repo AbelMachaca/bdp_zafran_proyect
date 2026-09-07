@@ -68,6 +68,10 @@ EMBLUE_POST_PURCHASE_ENABLED=false
 EMBLUE_POST_PURCHASE_URL=
 EMBLUE_POST_PURCHASE_TOKEN=
 EMBLUE_POST_PURCHASE_ACTIVE_FROM=
+EMBLUE_CROSS_SELL_ENABLED=false
+EMBLUE_CROSS_SELL_URL=
+EMBLUE_CROSS_SELL_TOKEN=
+EMBLUE_CROSS_SELL_ACTIVE_FROM=
 EMBLUE_TIMEOUT_MS=12000
 EMBLUE_MAX_ATTEMPTS=5
 AUTOMATION_TEST_SECRET=generar_otra_clave_larga_y_aleatoria
@@ -155,7 +159,29 @@ EMBLUE_POST_PURCHASE_ACTIVE_FROM=2026-09-04T18:30:00-03:00
 
 Primero se configura y prueba el mapeo manteniendo ambas variables en `false`. No se deben activar hasta que la URL completa y el Journey estén revisados. El JSON lleva los datos simples del contacto y pedido en el nivel superior —incluido `email`, que Data Lab exige— y `products` como arreglo de objetos para utilizarlo como campo dinámico en el Journey.
 
-Cada trabajo se toma de forma exclusiva para evitar envíos simultáneos duplicados. Las respuestas se registran en `automation_attempts`; los fallos se reintentan hasta `EMBLUE_MAX_ATTEMPTS` con esperas progresivas. Cross-sell y Win-back permanecen en modo prueba hasta disponer de sus propios conectores.
+Cada trabajo se toma de forma exclusiva para evitar envíos simultáneos duplicados. Las respuestas se registran en `automation_attempts`; los fallos se reintentan hasta `EMBLUE_MAX_ATTEMPTS` con esperas progresivas. Win-back permanece en modo prueba hasta disponer de su propio conector.
+
+### Cross-sell en emBlue Data Lab / Journeys
+
+Cross-sell usa un conector independiente de Postcompra. Antes de cada envío vuelve a comprobar que el pedido disparador siga siendo válido, que exista correo, que el consentimiento promocional continúe activo y que el contacto no haya realizado otra compra en `processing` o `completed`. El JSON mantiene el mismo contrato estable, pero utiliza `automation_type: cross_sell`, un `event_id` propio y la compra disparadora con su segmentación `granolas`, `barras` o `sin_categoria_clara`.
+
+Primero cargá la URL del nuevo conector manteniendo el envío real apagado:
+
+```text
+EMBLUE_CROSS_SELL_ENABLED=false
+EMBLUE_CROSS_SELL_URL=https://api.embluemail.com/v2.3/integrations/.../execute/...
+EMBLUE_CROSS_SELL_TOKEN=
+EMBLUE_CROSS_SELL_ACTIVE_FROM=
+```
+
+El botón **Probar Cross-sell** permite validar el mapeo sin tocar la cola. Cuando la prueba sea correcta, definí un corte futuro cercano y activá:
+
+```text
+EMBLUE_CROSS_SELL_ENABLED=true
+EMBLUE_CROSS_SELL_ACTIVE_FROM=2026-09-07T18:30:00-03:00
+```
+
+Los trabajos cuya fecha prevista sea anterior al corte quedan como `expired` y nunca se envían. Los posteriores se entregan al cumplir 35 días exactos desde que su pedido entró en procesamiento.
 
 ### Prueba manual de Postcompra
 

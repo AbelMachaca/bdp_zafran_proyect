@@ -36,7 +36,8 @@ export type AutomationJobsResponse = {
   mode: {
     enabled: boolean; emblueEnabled: boolean;
     connectors?: { postPurchase: boolean; crossSell: boolean; winBack: boolean };
-    testDeliveryConfigured?: boolean; postPurchaseActiveFrom?: string | null;
+    testDeliveryConfigured?: boolean; testCrossSellDeliveryConfigured?: boolean;
+    postPurchaseActiveFrom?: string | null; crossSellActiveFrom?: string | null;
   };
 };
 export type Dashboard = {

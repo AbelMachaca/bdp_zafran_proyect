@@ -366,7 +366,7 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
   const [page, setPage] = useState(1); const [status, setStatus] = useState<AutomationFilterStatus>('');
   const [type, setType] = useState<AutomationType | ''>(''); const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<string | null>(null); const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(''); const [showPostPurchaseTest, setShowPostPurchaseTest] = useState(false); const [, setClock] = useState(Date.now());
+  const [error, setError] = useState(''); const [testAutomation, setTestAutomation] = useState<'post_purchase' | 'cross_sell' | null>(null); const [, setClock] = useState(Date.now());
   const load = () => {
     if (!configured) return;
     setLoading(true); setError('');
@@ -406,7 +406,8 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
       <div className="search-box"><Search /><input value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && refreshFromFirstPage()} placeholder="Correo, cliente o pedido…" /></div>
       <div className="select-wrap"><select value={type} onChange={(e) => { setType(e.target.value as AutomationType | ''); setPage(1); }}><option value="">Todas las automatizaciones</option><option value="post_purchase">Postcompra</option><option value="cross_sell">Cross-sell</option><option value="win_back">Win-back</option></select><ChevronDown /></div>
       <div className="select-wrap"><select value={status} onChange={(e) => { setStatus(e.target.value as AutomationFilterStatus); setPage(1); }}><option value="">Todos los estados</option><option value="scheduled">Programado</option><option value="ready">Listo</option><option value="processing">Enviando</option><option value="sent">Enviado</option><option value="expired">Vencido · no enviado</option><option value="problems">Cancelados o con problema</option><option value="cancelled">Cancelado</option><option value="skipped">Omitido</option><option value="failed">Fallido</option></select><ChevronDown /></div>
-      <button className="test-launch" onClick={() => setShowPostPurchaseTest(true)}><Send /> Probar Postcompra</button>
+      <button className="test-launch" onClick={() => setTestAutomation('post_purchase')}><Send /> Probar Postcompra</button>
+      <button className="test-launch cross-sell" onClick={() => setTestAutomation('cross_sell')}><Send /> Probar Cross-sell</button>
       <button className="primary" onClick={refreshFromFirstPage} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Actualizar</button>
     </div>
     {error && <ErrorBox message={error} />}
@@ -425,7 +426,7 @@ function AutomationsView({ configured, onSelectOrder }: { configured: boolean; o
       </Fragment>) : <Empty icon={<Workflow />} text="No hay automatizaciones con estos filtros" />}
     </div>
     {data && <div className="pagination"><span>{data.total} automatizaciones encontradas · {summary?.post_purchase || 0} postcompra · {summary?.cross_sell || 0} cross-sell · {summary?.win_back || 0} win-back</span><div><button disabled={page === 1} onClick={() => setPage(page - 1)}><ChevronLeft /></button><b>Página {page}</b><button disabled={page * data.perPage >= data.total} onClick={() => setPage(page + 1)}><ChevronRight /></button></div></div>}
-    {showPostPurchaseTest && <PostPurchaseTestModal configured={Boolean(data?.mode.testDeliveryConfigured)} onClose={() => setShowPostPurchaseTest(false)} />}
+    {testAutomation && <AutomationTestModal type={testAutomation} configured={Boolean(testAutomation === 'post_purchase' ? data?.mode.testDeliveryConfigured : data?.mode.testCrossSellDeliveryConfigured)} onClose={() => setTestAutomation(null)} />}
   </section>;
 }
 
@@ -435,7 +436,8 @@ type PostPurchaseTestForm = {
   product_name: string; product_sku: string; product_quantity: string; product_total: string;
 };
 
-function PostPurchaseTestModal({ configured, onClose }: { configured: boolean; onClose: () => void }) {
+function AutomationTestModal({ type, configured, onClose }: { type: 'post_purchase' | 'cross_sell'; configured: boolean; onClose: () => void }) {
+  const isCrossSell = type === 'cross_sell';
   const [form, setForm] = useState<PostPurchaseTestForm>({
     secret: '', email: '', first_name: 'Cliente', last_name: 'Prueba', phone: '', order_number: 'TEST-001',
     currency: 'ARS', order_total: '38600', marketing_category: 'granolas', product_name: 'Granola clásica',
@@ -453,7 +455,7 @@ function PostPurchaseTestModal({ configured, onClose }: { configured: boolean; o
   const send = async () => {
     setSending(true); setError(''); setResult(null);
     try {
-      const response = await api<{ ok: boolean; httpStatus?: number; eventId?: string }>('/automations/test/post-purchase', {
+      const response = await api<{ ok: boolean; httpStatus?: number; eventId?: string }>(isCrossSell ? '/automations/test/cross-sell' : '/automations/test/post-purchase', {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Automation-Test-Secret': form.secret },
         body: JSON.stringify(requestBody),
       });
@@ -461,10 +463,10 @@ function PostPurchaseTestModal({ configured, onClose }: { configured: boolean; o
     } catch (e) { setError(e instanceof Error ? e.message : 'No se pudo enviar la prueba.'); }
     finally { setSending(false); }
   };
-  return <Modal title="Probar Postcompra en emBlue" onClose={onClose}>
+  return <Modal title={`Probar ${isCrossSell ? 'Cross-sell' : 'Postcompra'} en emBlue`} onClose={onClose}>
     <div className="automation-test-modal">
-      <div className="automation-test-intro"><Send /><span><strong>Simulación independiente de la cola</strong><small>Envía el JSON inmediatamente al conector de Postcompra. No crea, modifica ni consume trabajos reales.</small></span></div>
-      {!configured && <div className="automation-test-warning"><AlertCircle />El backend aún no informa una clave de prueba configurada. Agregá <code>AUTOMATION_TEST_SECRET</code> en Easypanel y volvé a desplegar.</div>}
+      <div className="automation-test-intro"><Send /><span><strong>Simulación independiente de la cola</strong><small>Envía el JSON inmediatamente al conector de {isCrossSell ? 'Cross-sell' : 'Postcompra'}. No crea, modifica ni consume trabajos reales.</small></span></div>
+      {!configured && <div className="automation-test-warning"><AlertCircle />El backend aún no tiene configurada la URL de prueba de {isCrossSell ? 'Cross-sell' : 'Postcompra'} o <code>AUTOMATION_TEST_SECRET</code>.</div>}
       <div className="automation-test-grid">
         <div className="automation-test-form">
           <label className="span-2">Clave de prueba<input type="password" autoComplete="off" value={form.secret} onChange={(e) => change('secret', e.target.value)} placeholder="AUTOMATION_TEST_SECRET" /></label>
