@@ -27,7 +27,7 @@ La aplicación no contiene rutas de escritura. El explorador usa una lista cerra
 
 ## Definiciones del dashboard
 
-- **Criterio WooCommerce (predeterminado):** estados `processing`, `completed` y `refunded`, igual que el informe nativo de la tienda.
+- **Estados predeterminados:** `processing` y `completed`. Reembolsado queda desmarcado y puede incluirse manualmente.
 - **Ventas brutas de WooCommerce:** total vendido con impuestos y envío, después de reembolsos.
 - **Ventas netas de WooCommerce:** ventas brutas menos impuestos y envío.
 - Los estados se pueden activar o desactivar; cuando se usa una selección personalizada, el panel reconstruye los importes desde los pedidos.
@@ -94,14 +94,14 @@ npm run db:test:prod -w server
 
 ## Reporte de email marketing y cupones
 
-La sección **Email marketing** analiza un año completo y permite elegir el mes operativo. La comparación comienza apagada y puede activarse contra el mes anterior, el promedio de los tres meses anteriores o el mismo mes del año pasado. Incluye ventas y pedidos atribuidos a email/emBlue mediante los metadatos nativos de atribución de WooCommerce, pedidos influenciados por email, adopción mensual de cupones y un seguimiento destacado del cupón `¡hola20%!`.
+La sección **Email marketing** analiza un año completo y permite elegir el mes operativo. La comparación comienza apagada y puede activarse contra el mes anterior completo, el mes anterior hasta el mismo día y hora argentina, el promedio de los tres meses anteriores o el mismo mes del año pasado. Incluye ventas y pedidos atribuidos a email/emBlue mediante los metadatos nativos de atribución de WooCommerce, pedidos influenciados por email, adopción mensual de cupones y un seguimiento destacado del cupón `¡hola20%!`.
 
 El desglose de atribución muestra qué campañas, fuentes UTM, medios UTM, combinaciones source/medium, landing pages y dispositivos aportaron más pedidos y venta neta al canal email. También informa la cobertura de etiquetado para detectar campañas incompletas.
 
 El ranking de cupones informa usos, clientes únicos, venta neta asociada, descuento otorgado, participación sobre los pedidos y variación interanual. Los estados contabilizados son configurables desde el panel.
 
 ```text
-GET /api/email-marketing?year=2026&statuses=processing,completed,refunded
+GET /api/email-marketing?year=2026&statuses=processing,completed
 ```
 
 El reporte no estima envíos, aperturas, clics ni bajas: esas métricas requieren una futura conexión con la API de emBlue.
@@ -172,3 +172,11 @@ El panel solicita esa clave al abrir la prueba y la envía en el header `X-Autom
 ```text
 POST /api/automations/test/post-purchase
 ```
+
+## Consultas y actualización de reportes
+
+- Resumen y Origen y zonas incluyen **Mes completo**, que completa Desde y Hasta con el primer y último día del mes elegido.
+- Los rangos completos de pedidos se reutilizan durante 60 segundos, incluso entre reportes y consultas simultáneas. Se conservan hasta 24 rangos en memoria; reiniciar el servidor vacía esta caché.
+- **Actualizar**, **Analizar** y **Actualizar reporte** envían `refresh=true` para consultar nuevamente WooCommerce e invalidar rangos guardados superpuestos. No hay sincronización automática en segundo plano.
+- Las consultas usan solo los campos necesarios para los informes, un máximo global de cinco solicitudes simultáneas y un tiempo máximo de 30 segundos por solicitud. Los informes recorren todas las páginas y ya no se truncan en 5.000 pedidos. La primera consulta de un período amplio sigue dependiendo de la velocidad de la tienda.
+- **Mismo día y hora** recorta ambos meses al día y hora actuales de Argentina y muestra los dos rangos exactos. También puede usarse sobre meses históricos; si un mes tiene menos días, ambos se limitan al último día común. Los gráficos y tablas anuales mantienen sus meses completos. **Mes anterior completo** conserva el mes analizado y lo compara con todo el mes previo, incluso diciembre del año anterior al analizar enero.

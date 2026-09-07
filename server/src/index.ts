@@ -3,6 +3,8 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { z } from 'zod';
 import { config, credentialsConfigured } from './config.js';
+import { createOrderCache } from './order-cache.js';
+import { matchedMarketingMonths } from './marketing-comparison.js';
 import { WooError, getAll, publicApiIndex, wooGet } from './woocommerce.js';
 import { capabilities, explorerResources } from './capabilities.js';
 import { orderDimensions, summarizeEmailMarketing, summarizeOrders, type AnalyticsOrder } from './analytics.js';
@@ -12,8 +14,6 @@ import { automationJobsHandler, automationStatusHandler, postPurchaseTestHandler
 import { wooOrderWebhookHandler } from './webhooks.js';
 
 const app = express();
-const dashboardCache = new Map<string, { expires: number; value: unknown }>();
-const orderRangeCache = new Map<string, { expires: number; value: Record<string, unknown>[] }>();
 const salesReportCache = new Map<string, { expires: number; value: NativeSalesReport }>();
 app.use(helmet());
 app.use(cors({ origin: config.clientOrigin }));
@@ -87,14 +87,12 @@ app.get('/api/dashboard', async (req, res, next) => {
     if (Boolean(range.compare_from) !== Boolean(range.compare_to)) throw new WooError(400, 'La comparación personalizada necesita fecha desde y hasta');
     if (range.compare_from && range.compare_to && range.compare_from > range.compare_to) throw new WooError(400, 'La comparación personalizada tiene las fechas invertidas');
     const statuses = parseStatuses(range.statuses);
-    const cacheKey = `${range.from}:${range.to}:${statuses.join(',')}:${range.compare_from || ''}:${range.compare_to || ''}`;
-    const cached = dashboardCache.get(cacheKey);
-    if (cached && cached.expires > Date.now()) return res.json({ ...(cached.value as object), cached: true });
+    const refresh = req.query.refresh === 'true';
     const periods = comparisonPeriods(range.from, range.to);
     const customPeriod = range.compare_from && range.compare_to ? { from: range.compare_from, to: range.compare_to } : null;
     const [currentOrders, previousOrders, yearOrders, customOrders] = await Promise.all([
-      loadOrdersPeriod(periods.current), loadOrdersPeriod(periods.previous), loadOrdersPeriod(periods.previousYear),
-      customPeriod ? loadOrdersPeriod(customPeriod) : Promise.resolve(null),
+      loadOrdersPeriod(periods.current, refresh), loadOrdersPeriod(periods.previous, refresh), loadOrdersPeriod(periods.previousYear, refresh),
+      customPeriod ? loadOrdersPeriod(customPeriod, refresh) : Promise.resolve(null),
     ]);
     let current = summarizeOrders(currentOrders as never[], statuses);
     let previous = summarizeOrders(previousOrders as never[], statuses);
@@ -102,8 +100,8 @@ app.get('/api/dashboard', async (req, res, next) => {
     let custom = customOrders ? summarizeOrders(customOrders as never[], statuses) : null;
     if (isWooReportPreset(statuses)) {
       const [currentReport, previousReport, yearReport, customReport] = await Promise.all([
-        loadSalesReport(periods.current), loadSalesReport(periods.previous), loadSalesReport(periods.previousYear),
-        customPeriod ? loadSalesReport(customPeriod) : Promise.resolve(null),
+        loadSalesReport(periods.current, refresh), loadSalesReport(periods.previous, refresh), loadSalesReport(periods.previousYear, refresh),
+        customPeriod ? loadSalesReport(customPeriod, refresh) : Promise.resolve(null),
       ]);
       current = applyNativeReport(current, currentReport);
       previous = applyNativeReport(previous, previousReport);
@@ -118,7 +116,6 @@ app.get('/api/dashboard', async (req, res, next) => {
       },
       generatedAt: new Date().toISOString(), cached: false,
     };
-    dashboardCache.set(cacheKey, { expires: Date.now() + 5 * 60_000, value });
     res.json(value);
   } catch (error) { next(error); }
 });
@@ -158,18 +155,21 @@ app.get('/api/email-marketing', async (req, res, next) => {
       year: z.coerce.number().int().min(2015).max(currentYear).default(currentYear),
       statuses: z.string().optional(),
     }).parse(req.query);
+    const refresh = req.query.refresh === 'true';
+    const now = new Date();
     const todayParts = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'America/Argentina/Buenos_Aires' }).formatToParts(new Date());
     const today = Object.fromEntries(todayParts.map((part) => [part.type, part.value]));
     const currentTo = query.year === currentYear ? `${today.year}-${today.month}-${today.day}` : `${query.year}-12-31`;
     const previousYear = query.year - 1;
     const previousTo = query.year === currentYear ? `${previousYear}-${today.month}-${today.day}` : `${previousYear}-12-31`;
     const [orders, previousFullYearOrders] = await Promise.all([
-      loadOrdersPeriod({ from: `${query.year}-01-01`, to: currentTo }),
-      loadOrdersPeriod({ from: `${previousYear}-01-01`, to: `${previousYear}-12-31` }),
+      loadOrdersPeriod({ from: `${query.year}-01-01`, to: currentTo }, refresh),
+      loadOrdersPeriod({ from: `${previousYear}-01-01`, to: `${previousYear}-12-31` }, refresh),
     ]);
     const previousOrders = (previousFullYearOrders as AnalyticsOrder[]).filter((order) => (order.date_created?.slice(0, 10) || '') <= previousTo);
     res.json({
       ...summarizeEmailMarketing(orders as AnalyticsOrder[], previousOrders, query.year, parseStatuses(query.statuses), '¡hola20%!', previousFullYearOrders as AnalyticsOrder[]),
+      matchedMonths: matchedMarketingMonths(orders as AnalyticsOrder[], previousFullYearOrders as AnalyticsOrder[], query.year, parseStatuses(query.statuses), now),
       period: { from: `${query.year}-01-01`, to: currentTo },
       comparisonPeriod: { from: `${previousYear}-01-01`, to: previousTo },
       generatedAt: new Date().toISOString(),
@@ -177,26 +177,25 @@ app.get('/api/email-marketing', async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-async function loadOrdersPeriod({ from, to }: { from: string; to: string }) {
-  const key = `${from}:${to}`; const cached = orderRangeCache.get(key);
-  if (cached && cached.expires > Date.now()) return cached.value;
-  const value = await getAll<Record<string, unknown>>('orders', {
-    after: `${from}T00:00:00-03:00`, before: `${to}T23:59:59-03:00`, orderby: 'date', order: 'desc', status: 'any',
-  });
-  orderRangeCache.set(key, { expires: Date.now() + 5 * 60_000, value });
-  return value;
-}
+const loadOrdersPeriod = createOrderCache<Record<string, unknown>>(({ from, to }) =>
+  getAll<Record<string, unknown>>('orders', {
+    after: `${from}T00:00:00`, before: `${to}T23:59:59`, orderby: 'id', order: 'asc', status: 'any',
+    _fields: 'id,number,status,date_created,total,total_tax,shipping_total,shipping_tax,discount_total,discount_tax,customer_id,billing,shipping,payment_method_title,line_items,fee_lines,refunds,coupon_lines,meta_data',
+  }),
+);
 
 type NativeSalesReport = {
   total_sales?: string; net_sales?: string; total_orders?: number; total_tax?: string; total_shipping?: string;
   total_refunds?: number; total_discount?: string; totals?: Record<string, { sales?: string; tax?: string; shipping?: string }>;
 };
-async function loadSalesReport({ from, to }: { from: string; to: string }) {
+async function loadSalesReport({ from, to }: { from: string; to: string }, refresh = false) {
   const key = `${from}:${to}`; const cached = salesReportCache.get(key);
-  if (cached && cached.expires > Date.now()) return cached.value;
+  if (!refresh && cached && cached.expires > Date.now()) return cached.value;
   const response = await wooGet<NativeSalesReport[]>('reports/sales', { date_min: from, date_max: to });
   const value = response.data[0] || {};
-  salesReportCache.set(key, { expires: Date.now() + 5 * 60_000, value });
+  for (const [entryKey, entry] of salesReportCache) if (entry.expires <= Date.now()) salesReportCache.delete(entryKey);
+  if (salesReportCache.size >= 24) salesReportCache.delete(salesReportCache.keys().next().value!);
+  salesReportCache.set(key, { expires: Date.now() + 60_000, value });
   return value;
 }
 
@@ -234,7 +233,7 @@ function comparisonPeriods(from: string, to: string) {
 
 const allowedStatuses = new Set(['pending', 'processing', 'on-hold', 'completed', 'cancelled', 'refunded', 'failed']);
 function parseStatuses(value?: string) {
-  const statuses = (value || 'processing,completed,refunded').split(',').map((item) => item.trim()).filter((item) => allowedStatuses.has(item));
+  const statuses = (value || 'processing,completed').split(',').map((item) => item.trim()).filter((item) => allowedStatuses.has(item));
   if (!statuses.length) throw new WooError(400, 'Seleccioná al menos un estado de pedido');
   return [...new Set(statuses)];
 }

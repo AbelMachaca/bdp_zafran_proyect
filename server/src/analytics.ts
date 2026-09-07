@@ -12,7 +12,9 @@ export type AnalyticsOrder = {
   fee_lines?: Fee[]; refunds?: Refund[]; coupon_lines?: CouponLine[]; meta_data?: Meta[];
 };
 
-export const defaultReportStatuses = ['processing', 'completed', 'refunded'];
+const monthFormatter = new Intl.DateTimeFormat('es-AR', { month: 'short', timeZone: 'UTC' });
+
+export const defaultReportStatuses = ['processing', 'completed'];
 const provinceNames: Record<string, string> = {
   C: 'Ciudad Autónoma de Buenos Aires', B: 'Buenos Aires', K: 'Catamarca', H: 'Chaco', U: 'Chubut',
   X: 'Córdoba', W: 'Corrientes', E: 'Entre Ríos', P: 'Formosa', Y: 'Jujuy', L: 'La Pampa',
@@ -204,7 +206,7 @@ export function summarizeEmailMarketing(
 
 function summarizeMarketingPeriod(orders: AnalyticsOrder[], year: number, primaryKey: string) {
   const months = Array.from({ length: 12 }, (_, month) => ({
-    month: month + 1, label: new Intl.DateTimeFormat('es-AR', { month: 'short', timeZone: 'UTC' }).format(new Date(Date.UTC(year, month, 1))),
+    month: month + 1, label: monthFormatter.format(new Date(Date.UTC(year, month, 1))),
     storeOrders: 0, storeRevenue: 0, emailOrders: 0, emailRevenue: 0, influencedOrders: 0, influencedRevenue: 0,
     couponOrders: 0, couponUses: 0, couponDiscount: 0, primaryCouponUses: 0, primaryCouponRevenue: 0, primaryCouponDiscount: 0,
   }));

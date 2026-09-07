@@ -10,11 +10,10 @@ import { api, money, shortDate } from './api';
 import type { Aggregate, AutomationJob, AutomationJobsResponse, AutomationStatus, AutomationType, CapabilityResponse, Dashboard, EmailMarketingReport, Health, MarketingMonth, Meta, Order } from './types';
 
 type View = 'dashboard' | 'orders' | 'automations' | 'email' | 'attribution' | 'capabilities' | 'explorer';
-const today = new Date();
-const initialFrom = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-const initialTo = today.toISOString().slice(0, 10);
+const initialTo = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+const initialFrom = `${initialTo.slice(0, 7)}-01`;
 const statusNames: Record<string, string> = { pending: 'Pendiente', processing: 'Procesando', 'on-hold': 'En espera', completed: 'Completado', cancelled: 'Cancelado', refunded: 'Reembolsado', failed: 'Fallido', trash: 'Papelera' };
-const defaultStatuses = ['processing', 'completed', 'refunded'];
+const defaultStatuses = ['processing', 'completed'];
 const monthNames = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
 export default function App() {
@@ -92,6 +91,18 @@ function SetupBanner() {
   return <div className="setup-banner"><div className="setup-icon"><LockKeyhole /></div><div><strong>Agregá tus claves para ver los datos reales</strong><p>Copiá <code>.env.example</code> como <code>server/.env</code>, pegá allí la Consumer Key y el Consumer Secret, y reiniciá el servidor.</p></div></div>;
 }
 
+function MonthPicker({ from, to, onChange }: { from: string; to: string; onChange: (from: string, to: string) => void }) {
+  const endOfMonth = (month: string) => {
+    const [year, number] = month.split('-').map(Number);
+    return new Date(Date.UTC(year, number, 0)).toISOString().slice(0, 10);
+  };
+  const selected = from && from.endsWith('-01') && to === endOfMonth(from.slice(0, 7)) ? from.slice(0, 7) : '';
+  return <label>Mes completo<input type="month" value={selected} onChange={(event) => {
+    const month = event.target.value;
+    if (month) onChange(`${month}-01`, endOfMonth(month));
+  }} /></label>;
+}
+
 function StatusFilter({ value, onChange }: { value: string[]; onChange: (value: string[]) => void }) {
   const options = ['processing', 'completed', 'refunded', 'pending', 'on-hold', 'cancelled', 'failed'];
   const toggle = (status: string) => {
@@ -99,7 +110,7 @@ function StatusFilter({ value, onChange }: { value: string[]; onChange: (value: 
     if (next.length) onChange(next);
   };
   const isWooPreset = defaultStatuses.every((status) => value.includes(status)) && value.length === defaultStatuses.length;
-  return <div className="status-filter"><div className="status-filter-title"><div><strong>Estados contabilizados</strong><span>El informe nativo incluye Procesando, Completado y Reembolsado.</span></div><button className={isWooPreset ? 'active' : ''} onClick={() => onChange(defaultStatuses)}>Criterio WooCommerce</button></div><div className="status-options">{options.map((status) => <label key={status} className={value.includes(status) ? 'selected' : ''}><input type="checkbox" checked={value.includes(status)} onChange={() => toggle(status)} /><span>{statusNames[status]}</span></label>)}</div><small>Después de cambiar estados, presioná “Actualizar” o “Analizar”. Los reembolsados suman como pedido, pero su venta queda en cero y el reembolso se informa por separado.</small></div>;
+  return <div className="status-filter"><div className="status-filter-title"><div><strong>Estados contabilizados</strong><span>Por defecto se incluyen Procesando y Completado.</span></div><button className={isWooPreset ? 'active' : ''} onClick={() => onChange(defaultStatuses)}>Restablecer estados</button></div><div className="status-options">{options.map((status) => <label key={status} className={value.includes(status) ? 'selected' : ''}><input type="checkbox" checked={value.includes(status)} onChange={() => toggle(status)} /><span>{statusNames[status]}</span></label>)}</div><small>Después de cambiar estados, presioná “Actualizar” o “Analizar”.</small></div>;
 }
 
 function DashboardView({ configured }: { configured: boolean }) {
@@ -108,19 +119,20 @@ function DashboardView({ configured }: { configured: boolean }) {
   const [statuses, setStatuses] = useState(defaultStatuses);
   const [comparison, setComparison] = useState<'none' | 'previous' | 'previousYear' | 'custom'>('none');
   const [customFrom, setCustomFrom] = useState(shiftDate(initialFrom, -1, 'year')); const [customTo, setCustomTo] = useState(shiftDate(initialTo, -1, 'year'));
-  const load = () => {
+  const load = (refresh = false) => {
     if (!configured) return;
     setLoading(true); setError('');
     const customQuery = comparison === 'custom' ? `&compare_from=${customFrom}&compare_to=${customTo}` : '';
-    api<Dashboard>(`/dashboard?from=${from}&to=${to}&statuses=${statuses.join(',')}${customQuery}`).then(setData).catch((e) => setError(e.message)).finally(() => setLoading(false));
+    api<Dashboard>(`/dashboard?refresh=${refresh}&from=${from}&to=${to}&statuses=${statuses.join(',')}${customQuery}`).then(setData).catch((e) => setError(e.message)).finally(() => setLoading(false));
   };
-  useEffect(load, [configured]);
+  useEffect(() => { load(); }, [configured]);
   const compared = comparison === 'none' ? undefined : data?.comparisons[comparison];
   const comparedPeriod = comparison === 'none' ? undefined : data?.periods[comparison];
   return <section className="page">
     <PageTitle eyebrow="PANORAMA COMERCIAL" title="Resumen de la tienda" subtitle="Una lectura clara de ventas, pedidos y clientes." />
-    <div className="date-controls"><label>Desde<input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></label><span>—</span><label>Hasta<input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></label><button className="primary" onClick={load} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Actualizar</button></div>
+    <div className="date-controls"><MonthPicker from={from} to={to} onChange={(start, end) => { setFrom(start); setTo(end); }} /><label>Desde<input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></label><span>—</span><label>Hasta<input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></label><button className="primary" onClick={() => load(true)} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Actualizar</button></div>
     <StatusFilter value={statuses} onChange={setStatuses} />
+    {data && <p className="report-freshness">Reporte consultado: {shortDate(data.generatedAt)} · Datos reutilizados hasta 60 s; el botón de actualización consulta nuevamente WooCommerce.</p>}
     {error && <ErrorBox message={error} />}
     <div className="metrics-grid">
       <Metric label="Ventas netas · WooCommerce" value={data ? money(data.financials.wooNetSales) : '—'} note="Sin IVA, impuestos ni envío" delta={compared?.delta.revenue} icon={<CircleDollarSign />} accent="forest" />
@@ -129,7 +141,7 @@ function DashboardView({ configured }: { configured: boolean }) {
       <Metric label="Ticket neto promedio" value={data ? money(data.averageTicket) : '—'} note="Ventas netas ÷ pedidos contabilizados" delta={compared?.delta.averageTicket} icon={<UsersRound />} accent="plum" />
     </div>
     <div className="dashboard-grid">
-      <article className="panel sales-panel wide comparison-panel"><div className="comparison-head"><PanelHead title="Evolución de ventas netas" subtitle="Mismo criterio que el informe de WooCommerce: sin impuestos ni envío" /><div className="segment-control"><button className={comparison === 'none' ? 'active' : ''} onClick={() => setComparison('none')}>Sin comparar</button><button className={comparison === 'previous' ? 'active' : ''} onClick={() => setComparison('previous')}>Mes anterior</button><button className={comparison === 'previousYear' ? 'active' : ''} onClick={() => setComparison('previousYear')}>Mismo período año anterior</button><button className={comparison === 'custom' ? 'active' : ''} onClick={() => setComparison('custom')}>Personalizado</button></div></div>{comparison === 'custom' && <div className="custom-comparison"><label>Comparar desde<input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} /></label><label>Hasta<input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} /></label><button className="primary" onClick={load}>Aplicar comparación</button></div>}{data ? <><ComparisonChart current={data.byDay} baseline={compared?.byDay || []} currentLabel={`${data.periods.current.from} — ${data.periods.current.to}`} baselineLabel={comparedPeriod ? `${comparedPeriod.from} — ${comparedPeriod.to}` : ''} />{compared && <div className="comparison-summary"><Delta label="Venta neta" value={data.revenue} baseline={compared.revenue} delta={compared.delta.revenue} moneyValue /><Delta label="Pedidos" value={data.orders} baseline={compared.orders} delta={compared.delta.orders} /><Delta label="Ticket promedio" value={data.averageTicket} baseline={compared.averageTicket} delta={compared.delta.averageTicket} moneyValue /><Delta label="Clientes" value={data.uniqueCustomers} baseline={compared.uniqueCustomers} delta={compared.delta.uniqueCustomers} /></div>}</> : <Empty icon={<Activity />} text="Todavía no hay datos para graficar" />}</article>
+      <article className="panel sales-panel wide comparison-panel"><div className="comparison-head"><PanelHead title="Evolución de ventas netas" subtitle="Mismo criterio que el informe de WooCommerce: sin impuestos ni envío" /><div className="segment-control"><button className={comparison === 'none' ? 'active' : ''} onClick={() => setComparison('none')}>Sin comparar</button><button className={comparison === 'previous' ? 'active' : ''} onClick={() => setComparison('previous')}>Mes anterior</button><button className={comparison === 'previousYear' ? 'active' : ''} onClick={() => setComparison('previousYear')}>Mismo período año anterior</button><button className={comparison === 'custom' ? 'active' : ''} onClick={() => setComparison('custom')}>Personalizado</button></div></div>{comparison === 'custom' && <div className="custom-comparison"><label>Comparar desde<input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} /></label><label>Hasta<input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} /></label><button className="primary" onClick={() => load(true)}>Aplicar comparación</button></div>}{data ? <><ComparisonChart current={data.byDay} baseline={compared?.byDay || []} currentLabel={`${data.periods.current.from} — ${data.periods.current.to}`} baselineLabel={comparedPeriod ? `${comparedPeriod.from} — ${comparedPeriod.to}` : ''} />{compared && <div className="comparison-summary"><Delta label="Venta neta" value={data.revenue} baseline={compared.revenue} delta={compared.delta.revenue} moneyValue /><Delta label="Pedidos" value={data.orders} baseline={compared.orders} delta={compared.delta.orders} /><Delta label="Ticket promedio" value={data.averageTicket} baseline={compared.averageTicket} delta={compared.delta.averageTicket} moneyValue /><Delta label="Clientes" value={data.uniqueCustomers} baseline={compared.uniqueCustomers} delta={compared.delta.uniqueCustomers} /></div>}</> : <Empty icon={<Activity />} text="Todavía no hay datos para graficar" />}</article>
       <article className="panel financial-panel"><PanelHead title="Cómo se compone la venta" subtitle="Importes del período seleccionado" />{data ? <FinancialBreakdown data={data} /> : <Empty icon={<CircleDollarSign />} text="Sin datos financieros" />}</article>
       <article className="panel"><PanelHead title="Estado de pedidos" subtitle="Distribución del período" /><div className="status-list">{data && Object.entries(data.byStatus).map(([name, count]) => <div className="status-row" key={name}><Status value={name} /><strong>{count}</strong><div className="track"><i style={{ width: `${Math.max(4, count / data.orders * 100)}%` }} /></div></div>)}</div></article>
       <article className="panel wide"><PanelHead title="Productos destacados" subtitle="Ordenados por unidades vendidas" /><div className="product-table"><div className="table-head"><span>Producto</span><span>Unidades</span><span>Ingreso neto</span></div>{data?.topProducts.map((p, i) => <div className="product-row" key={p.id}><span><b>{String(i + 1).padStart(2, '0')}</b>{p.name}</span><strong>{p.quantity}</strong><strong>{money(p.revenue)}</strong></div>)}</div></article>
@@ -190,8 +202,8 @@ function AttributionView({ configured, onSelectOrder }: { configured: boolean; o
   const [statuses, setStatuses] = useState(defaultStatuses);
   const [data, setData] = useState<Dashboard | null>(null); const [error, setError] = useState(''); const [loading, setLoading] = useState(false);
   const [drilldown, setDrilldown] = useState<Drilldown | null>(null); const [orders, setOrders] = useState<AttributionOrder[]>([]); const [ordersLoading, setOrdersLoading] = useState(false);
-  const load = () => { if (!configured) return; setLoading(true); setError(''); api<Dashboard>(`/dashboard?from=${from}&to=${to}&statuses=${statuses.join(',')}`).then(setData).catch((e) => setError(e.message)).finally(() => setLoading(false)); };
-  useEffect(load, [configured]);
+  const load = (refresh = false) => { if (!configured) return; setLoading(true); setError(''); api<Dashboard>(`/dashboard?refresh=${refresh}&from=${from}&to=${to}&statuses=${statuses.join(',')}`).then(setData).catch((e) => setError(e.message)).finally(() => setLoading(false)); };
+  useEffect(() => { load(); }, [configured]);
   const openDrilldown = (selection: Drilldown) => {
     setDrilldown(selection); setOrders([]); setOrdersLoading(true);
     api<{ data: AttributionOrder[] }>(`/attribution/orders?from=${from}&to=${to}&statuses=${statuses.join(',')}&dimension=${selection.dimension}&value=${encodeURIComponent(selection.value)}`)
@@ -201,8 +213,9 @@ function AttributionView({ configured, onSelectOrder }: { configured: boolean; o
   const direct = data?.attribution.channels.find((item) => item.name === 'Directo / sin identificar');
   return <section className="page">
     <PageTitle eyebrow="ATRIBUCIÓN Y TERRITORIO" title="De dónde vienen las ventas" subtitle="Fuentes, campañas, dispositivos, páginas de entrada y zonas de entrega." />
-    <div className="date-controls"><label>Desde<input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></label><span>—</span><label>Hasta<input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></label><button className="primary" onClick={load} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Analizar</button></div>
+    <div className="date-controls"><MonthPicker from={from} to={to} onChange={(start, end) => { setFrom(start); setTo(end); }} /><label>Desde<input type="date" value={from} onChange={(e) => setFrom(e.target.value)} /></label><span>—</span><label>Hasta<input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></label><button className="primary" onClick={() => load(true)} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Analizar</button></div>
     <StatusFilter value={statuses} onChange={setStatuses} />
+    {data && <p className="report-freshness">Reporte consultado: {shortDate(data.generatedAt)} · Datos reutilizados hasta 60 s; el botón de actualización consulta nuevamente WooCommerce.</p>}
     {error && <ErrorBox message={error} />}
     <div className="metrics-grid attribution-metrics">
       <Metric label="Pedidos identificados" value={data ? `${data.attribution.attributionRate}%` : '—'} note={`${data?.attribution.attributedOrders || 0} pedidos con información de origen`} icon={<MousePointerClick />} accent="forest" />
@@ -224,38 +237,41 @@ function AttributionView({ configured, onSelectOrder }: { configured: boolean; o
 }
 
 function EmailMarketingView({ configured }: { configured: boolean }) {
-  const currentYear = new Date().getFullYear();
+  const currentYear = Number(initialTo.slice(0, 4));
   const [year, setYear] = useState(currentYear);
-  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1);
-  const [comparison, setComparison] = useState<'none' | 'previousMonth' | 'threeMonthAverage' | 'previousYear'>('none');
+  const [selectedMonth, setSelectedMonth] = useState(Number(initialTo.slice(5, 7)));
+  const [comparison, setComparison] = useState<'none' | 'previousMonth' | 'matchedMonth' | 'threeMonthAverage' | 'previousYear'>('none');
   const [couponYoY, setCouponYoY] = useState(false);
   const [statuses, setStatuses] = useState(defaultStatuses);
   const [data, setData] = useState<EmailMarketingReport | null>(null);
   const [loading, setLoading] = useState(false); const [error, setError] = useState(''); const [search, setSearch] = useState('');
-  const load = () => {
+  const load = (refresh = false) => {
     if (!configured) return;
     setLoading(true); setError('');
-    api<EmailMarketingReport>(`/email-marketing?year=${year}&statuses=${statuses.join(',')}`)
+    api<EmailMarketingReport>(`/email-marketing?refresh=${refresh}&year=${year}&statuses=${statuses.join(',')}`)
       .then(setData).catch((e) => setError(e.message)).finally(() => setLoading(false));
   };
-  useEffect(load, [configured, year]);
+  useEffect(() => { load(); }, [configured, year]);
   const coupons = data?.coupons.filter((coupon) => coupon.code.toLocaleLowerCase('es-AR').includes(search.toLocaleLowerCase('es-AR'))) || [];
-  const month = data?.months[selectedMonth - 1];
+  const matched = data?.matchedMonths[selectedMonth - 1];
+  const month = comparison === 'matchedMonth' ? matched?.current : data?.months[selectedMonth - 1];
   const baseline = data && month ? marketingBaseline(data, selectedMonth, comparison) : null;
-  const comparisonLabel = comparison === 'previousMonth' ? 'Mes anterior' : comparison === 'threeMonthAverage' ? 'Promedio 3 meses anteriores' : comparison === 'previousYear' ? 'Mismo mes del año pasado' : '';
+  const comparisonLabel = comparison === 'matchedMonth' ? 'Mes anterior a igual corte' : comparison === 'previousMonth' ? 'Mes anterior completo' : comparison === 'threeMonthAverage' ? 'Promedio 3 meses anteriores' : comparison === 'previousYear' ? 'Mismo mes del año pasado' : '';
   const metricDelta = (current: number, previous?: number) => comparison === 'none' || previous === undefined ? undefined : percentageChange(current, previous);
   return <section className="page email-page">
     <PageTitle eyebrow="EMAIL + CUPONES" title="Email marketing" subtitle="Ventas atribuibles a emBlue, impacto de ¡hola20%! y evolución mensual de todos los cupones." />
     <div className="date-controls email-controls">
-      <label>Año<select value={year} onChange={(e) => { const value = Number(e.target.value); setYear(value); setSelectedMonth(value === currentYear ? new Date().getMonth() + 1 : 12); setComparison('none'); }}>{Array.from({ length: 7 }, (_, index) => currentYear - index).map((value) => <option key={value}>{value}</option>)}</select></label>
-      <label>Mes analizado<select value={selectedMonth} onChange={(e) => { setSelectedMonth(Number(e.target.value)); setComparison('none'); }}>{monthNames.map((name, index) => <option value={index + 1} key={name}>{name}</option>)}</select></label>
-      <button className="primary" onClick={load} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Actualizar reporte</button>
+      <label>Año<select value={year} onChange={(e) => { const value = Number(e.target.value); setYear(value); setData(null); setSelectedMonth(value === currentYear ? Number(initialTo.slice(5, 7)) : 12); setComparison('none'); }}>{Array.from({ length: 7 }, (_, index) => currentYear - index).map((value) => <option key={value}>{value}</option>)}</select></label>
+      <label>Mes analizado<select value={selectedMonth} onChange={(e) => { setSelectedMonth(Number(e.target.value)); setComparison('none'); }}>{monthNames.map((name, index) => <option value={index + 1} key={name} disabled={year === currentYear && index + 1 > Number(initialTo.slice(5, 7))}>{name}</option>)}</select></label>
+      <button className="primary" onClick={() => load(true)} disabled={!configured || loading}>{loading ? <RefreshCw className="spin" /> : <RefreshCw />} Actualizar reporte</button>
     </div>
     <StatusFilter value={statuses} onChange={setStatuses} />
+    {data && <p className="report-freshness">Reporte consultado: {shortDate(data.generatedAt)} · Datos reutilizados hasta 60 s; el botón de actualización consulta nuevamente WooCommerce.</p>}
     {error && <ErrorBox message={error} />}
     {data && month && <>
       <div className="email-data-note"><Mail /><div><strong>Lectura de emBlue basada en ventas</strong><span>Identificamos email por la atribución guardada en WooCommerce. Enviados, aperturas, clics y bajas requieren conectar la API de emBlue y no se estiman en este reporte.</span></div><b>{data.period.from} — {data.period.to}</b></div>
-      <div className="marketing-comparison"><div><strong>Comparar {monthNames[selectedMonth - 1]} de {year}</strong><span>La comparación está apagada por defecto. Activala solo cuando la necesites.</span></div><div className="segment-control"><button className={comparison === 'none' ? 'active' : ''} onClick={() => setComparison('none')}>Sin comparar</button><button className={comparison === 'previousMonth' ? 'active' : ''} onClick={() => setComparison('previousMonth')}>Mes anterior</button><button className={comparison === 'threeMonthAverage' ? 'active' : ''} onClick={() => setComparison('threeMonthAverage')}>Promedio 3 meses</button><button className={comparison === 'previousYear' ? 'active' : ''} onClick={() => setComparison('previousYear')}>Año pasado</button></div></div>
+      <div className="marketing-comparison"><div><strong>Comparar {monthNames[selectedMonth - 1]} de {year}</strong><span>La comparación está apagada por defecto. Activala solo cuando la necesites.</span></div><div className="segment-control"><button className={comparison === 'none' ? 'active' : ''} onClick={() => setComparison('none')}>Sin comparar</button><button className={comparison === 'previousMonth' ? 'active' : ''} onClick={() => setComparison('previousMonth')}>Mes anterior completo</button><button className={comparison === 'matchedMonth' ? 'active' : ''} onClick={() => setComparison('matchedMonth')}>Mismo día y hora</button><button className={comparison === 'threeMonthAverage' ? 'active' : ''} onClick={() => setComparison('threeMonthAverage')}>Promedio 3 meses</button><button className={comparison === 'previousYear' ? 'active' : ''} onClick={() => setComparison('previousYear')}>Año pasado</button></div></div>
+      {comparison === 'matchedMonth' && matched && <p className="report-freshness">Corte en horario argentino: {matched.currentFrom.replace('T', ' ')} — {matched.currentTo.replace('T', ' ')} vs. {matched.previousFrom.replace('T', ' ')} — {matched.previousTo.replace('T', ' ')}. Ambos períodos usan el mismo día y hora; si un mes es más corto, se limita al último día común.</p>}
       <div className="metrics-grid email-metrics">
         <Metric label="Ventas atribuidas a email" value={money(month.emailRevenue)} note={`${share(month.emailRevenue, month.storeRevenue)}% de la venta neta de ${month.label}`} delta={metricDelta(month.emailRevenue, baseline?.emailRevenue)} icon={<CircleDollarSign />} accent="forest" />
         <Metric label="Pedidos desde email" value={formatNumber(month.emailOrders)} note={`${share(month.emailOrders, month.storeOrders)}% de los pedidos del mes`} delta={metricDelta(month.emailOrders, baseline?.emailOrders)} icon={<Mail />} accent="blue" />
@@ -322,8 +338,9 @@ function Coverage({ label, value }: { label: string; value: number }) { return <
 
 type MarketingSnapshot = Pick<MarketingMonth, 'emailRevenue' | 'emailOrders' | 'influencedOrders' | 'couponOrders' | 'primaryCouponUses' | 'primaryCouponRevenue' | 'primaryCouponDiscount' | 'primaryCouponCustomers'>;
 const marketingKeys: Array<keyof MarketingSnapshot> = ['emailRevenue', 'emailOrders', 'influencedOrders', 'couponOrders', 'primaryCouponUses', 'primaryCouponRevenue', 'primaryCouponDiscount', 'primaryCouponCustomers'];
-function marketingBaseline(data: EmailMarketingReport, month: number, comparison: 'none' | 'previousMonth' | 'threeMonthAverage' | 'previousYear'): MarketingSnapshot | null {
+function marketingBaseline(data: EmailMarketingReport, month: number, comparison: 'none' | 'previousMonth' | 'matchedMonth' | 'threeMonthAverage' | 'previousYear'): MarketingSnapshot | null {
   if (comparison === 'none') return null;
+  if (comparison === 'matchedMonth') return data.matchedMonths[month - 1]?.previous || null;
   if (comparison === 'previousYear') return data.months[month - 1]?.previous || null;
   const relative = (offset: number) => {
     const index = month - 1 + offset;

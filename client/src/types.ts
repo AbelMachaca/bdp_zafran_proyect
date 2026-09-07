@@ -110,6 +110,7 @@ export type EmailMarketingReport = {
     storeOrders: number; storeRevenue: number; couponOrders: number; couponUsageRate: number;
     emailAttributed: MarketingMetric; emailInfluenced: MarketingMetric;
   };
+  matchedMonths: Array<{ current: MarketingMonth; previous: MarketingMonth; currentFrom: string; currentTo: string; previousFrom: string; previousTo: string; timeZone: string }>;
   primary: CouponMetric; months: MarketingMonth[]; coupons: CouponMetric[];
   emailBreakdown: { sources: Aggregate[]; mediums: Aggregate[]; campaigns: Aggregate[]; landings: Aggregate[]; devices: Aggregate[]; sourceMedium: Aggregate[] };
   emailCoverage: { source: number; medium: number; campaign: number; landing: number };
